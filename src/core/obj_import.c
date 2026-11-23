@@ -30,7 +30,7 @@ typedef struct mtl_def {
 
 static void mtl_init(mtl_def *m, const char *name) {
     memset(m, 0, sizeof *m);
-    strncpy(m->name, name, sizeof m->name - 1);
+    snprintf(m->name, sizeof m->name, "%s", name);
     m->Kd = v3_make(0.8f, 0.8f, 0.8f);
     m->Ns = 0.0f;
     m->Ni = 1.5f;
@@ -90,10 +90,10 @@ static int parse_mtl(const char *path, mtl_def **out, int *count) {
         else if (KEY("Pr")) { cur->Pr = (float)atof(p + 2); cur->has_Pr = 1; }
         else if (KEY("Pm")) { cur->Pm = (float)atof(p + 2); cur->has_Pm = 1; }
         else if (KEY("illum")) cur->illum = atoi(p + 5);
-        else if (KEY("map_Kd")) strncpy(cur->map_Kd, last_token(p), sizeof cur->map_Kd - 1);
-        else if (KEY("nora_shader")) strncpy(cur->shader, skip_ws(p + 11), sizeof cur->shader - 1);
+        else if (KEY("map_Kd")) snprintf(cur->map_Kd, sizeof cur->map_Kd, "%s", last_token(p));
+        else if (KEY("nora_shader")) snprintf(cur->shader, sizeof cur->shader, "%s", skip_ws(p + 11));
         else if (KEY("nora_abbe")) cur->abbe = (float)atof(p + 9);
-        else if (KEY("nora_type")) strncpy(cur->type, skip_ws(p + 9), sizeof cur->type - 1);
+        else if (KEY("nora_type")) snprintf(cur->type, sizeof cur->type, "%s", skip_ws(p + 9));
         else if (KEY("nora_roughness")) { cur->rough = (float)atof(p + 14); cur->has_rough = 1; }
         else if (KEY("nora_edge")) { cur->edge = read3(p + 9); cur->has_edge = 1; }
 #undef KEY

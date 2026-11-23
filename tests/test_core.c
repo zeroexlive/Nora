@@ -316,11 +316,16 @@ void test_render(void) {
     CHECK(fabs(lc - la) / la < 0.08);
     CHECK(fabs(ld - la) / la < 0.08);
     CHECK(!has_nan(a, W * H) && !has_nan(b, W * H) && !has_nan(c, W * H) && !has_nan(d, W * H));
-    /* determinism of the path tracer for a fixed seed and thread count */
+    /* the path tracer is deterministic for a fixed seed: samples depend only on (seed, pixel, pass);
+     * threads may add passes to a pixel in a different order, so compare up to float rounding */
     st.integrator = NORA_INT_PT; st.spp = 4; st.mode = NORA_MODE_RGB;
     nora_render_blocking(s, &st, a, NULL);
     nora_render_blocking(s, &st, b, NULL);
-    CHECK(memcmp(a, b, sizeof(float) * 3 * W * H) == 0);
+    {
+        int k, diff = 0;
+        for (k = 0; k < 3 * W * H; k++) if (fabsf(a[k] - b[k]) > 1e-4f * (1.0f + fabsf(a[k]))) diff++;
+        CHECK(diff == 0);
+    }
     /* async API: start, stop, resolve */
     {
         nora_render *r;

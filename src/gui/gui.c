@@ -28,7 +28,7 @@
 
 typedef struct gui_log {
     nmutex mu;
-    char lines[LOG_LINES][200];
+    char lines[LOG_LINES][400];
     int head, count;
 } gui_log;
 

@@ -398,7 +398,7 @@ static int inline_function(cg *c, osl_node *call, osl_node *fn, osl_type *ty);
 
 static int ccall(cg *c, osl_node *n, osl_type want, osl_type *ty) {
     const char *name = n->name;
-    int regs[16], i, d;
+    int regs[16] = { 0 }, i, d;
     osl_type t[16];
     /* type constructors */
     if (!strcmp(name, "color") || !strcmp(name, "point") || !strcmp(name, "vector") || !strcmp(name, "normal")) {
@@ -977,7 +977,7 @@ static void add_global(cg *c, const char *name, osl_type t, int reg, int ro) { s
 
 osl_program *osl_codegen(osl_front *f, char *err, size_t errcap) {
     cg c;
-    osl_program *p;
+    osl_program *volatile p;
     int i;
     osl_node *sh = f->shader;
     (void)err; (void)errcap;
@@ -1074,7 +1074,7 @@ void osl_program_free(osl_program *p) {
 
 osl_program *osl_compile(const char *source, char *err, size_t errcap) {
     osl_front f;
-    osl_program *p = NULL;
+    osl_program *volatile p = NULL;
     memset(&f, 0, sizeof f);
     f.src = source ? source : "";
     f.err = err;
