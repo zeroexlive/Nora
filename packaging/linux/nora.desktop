@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Nora
+GenericName=Physically Based Renderer
+Comment=Physically based renderer with Metropolis light transport, spectral rendering and an OSL node shader editor
+Exec=nora %F
+Icon=nora
+Terminal=false
+Categories=Graphics;3DGraphics;
+Keywords=render;raytracer;path tracing;OSL;3D;

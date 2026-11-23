@@ -1,5 +1,10 @@
 name: Release
 
+# Linux (Ubuntu 22.04+) and Windows are required for a release; the release is
+# published as soon as they are built. macOS arm64 hosted runners are often
+# capacity-limited, so macOS is built in parallel and attached to the release
+# afterwards, without blocking it.
+
 on:
   push:
     tags: ['v*']
@@ -12,39 +17,65 @@ on:
 permissions:
   contents: write
 
+env:
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+  REF: ${{ github.event.inputs.tag && format('refs/tags/{0}', github.event.inputs.tag) || github.ref }}
+
 jobs:
-  build:
-    name: Build ${{ matrix.name }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: true
-      matrix:
-        include:
-          - name: linux-x86_64
-            os: ubuntu-24.04
-          - name: macos-arm64
-            os: macos-latest
-          - name: windows-x86_64
-            os: windows-2022
-    env:
-      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+  linux:
+    name: Build linux-x86_64 (Ubuntu 22.04+, .tar.gz + .deb)
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
-      - name: Linux dependencies
-        if: runner.os == 'Linux'
+          ref: ${{ env.REF }}
+      - name: Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libx11-dev libgl1-mesa-dev
+          sudo apt-get install -y --no-install-recommends libx11-dev libgl1-mesa-dev dpkg-dev
       - name: Configure
-        shell: bash
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DNORA_BUILD_GUI=ON
+      - name: Build
+        run: cmake --build build --parallel
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+      - name: Linked libraries
+        run: ldd build/nora build/nora-cli
+      - name: Package .tar.gz
         run: |
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            cmake -S . -B build -A x64 -DNORA_BUILD_GUI=ON
-          else
-            cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DNORA_BUILD_GUI=ON
-          fi
+          PKG="nora-${TAG}-linux-x86_64"
+          mkdir -p "dist/$PKG"
+          cp build/nora-cli build/nora "dist/$PKG/"
+          strip --strip-unneeded "dist/$PKG/nora" "dist/$PKG/nora-cli"
+          cp -r README.md LICENSE examples scenes "dist/$PKG/"
+          cp third_party/obj/LICENSE "dist/$PKG/LICENSE.obj"
+          cp packaging/linux/nora.desktop packaging/linux/nora.png "dist/$PKG/"
+          mkdir -p "dist/$PKG/renders" && cp renders/*.png "dist/$PKG/renders/" || true
+          tar -C dist -czf "dist/$PKG.tar.gz" "$PKG"
+          rm -rf "dist/$PKG"
+      - name: Package .deb
+        run: packaging/linux/build-deb.sh build "$TAG" dist
+      - name: Check .deb installs and runs
+        run: |
+          sudo apt-get install -y ./dist/nora_*_amd64.deb
+          dpkg -L nora | grep -E '^/usr/bin/nora(-cli)?$'
+          nora-cli cornell --integrator pt --spp 2 --width 32 --height 32 -q -o /tmp/deb_smoke.png
+          test -s /tmp/deb_smoke.png
+          ls -la dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nora-linux-x86_64
+          path: dist/*
+
+  windows:
+    name: Build windows-x86_64
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.REF }}
+      - name: Configure
+        run: cmake -S . -B build -A x64 -DNORA_BUILD_GUI=ON
       - name: Build
         run: cmake --build build --config Release --parallel
       - name: Test
@@ -52,38 +83,26 @@ jobs:
       - name: Package
         shell: bash
         run: |
-          PKG="nora-${TAG}-${{ matrix.name }}"
+          PKG="nora-${TAG}-windows-x86_64"
           mkdir -p "dist/$PKG"
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            cp build/Release/nora-cli.exe build/Release/nora.exe "dist/$PKG/"
-          else
-            cp build/nora-cli build/nora "dist/$PKG/"
-          fi
+          cp build/Release/nora-cli.exe build/Release/nora.exe "dist/$PKG/"
           cp -r README.md LICENSE examples scenes "dist/$PKG/"
           cp third_party/obj/LICENSE "dist/$PKG/LICENSE.obj"
           mkdir -p "dist/$PKG/renders" && cp renders/*.png "dist/$PKG/renders/" || true
-          cd dist
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            7z a -tzip "$PKG.zip" "$PKG" > /dev/null
-          else
-            tar czf "$PKG.tar.gz" "$PKG"
-          fi
-          rm -rf "$PKG"
-          ls -la
+          cd dist && 7z a -tzip "$PKG.zip" "$PKG" > /dev/null && rm -rf "$PKG" && ls -la
       - uses: actions/upload-artifact@v4
         with:
-          name: nora-${{ matrix.name }}
+          name: nora-windows-x86_64
           path: dist/*
 
   publish:
     name: Publish release
-    needs: build
-    runs-on: ubuntu-24.04
-    env:
-      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    needs: [linux, windows]
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/download-artifact@v4
         with:
+          pattern: nora-*
           path: dist
           merge-multiple: true
       - name: Checksums
@@ -98,10 +117,76 @@ jobs:
           body: |
             Nora ${{ env.TAG }}: a physically based renderer with Metropolis light transport (PSSMLT over a path tracer with NEE), RGB and spectral (hero wavelength) modes, a built-in OSL-subset compiler, a node shader editor and a CUI GUI.
 
-            Binaries: `nora` (GUI) and `nora-cli` for Linux x86_64, macOS arm64 and Windows x86_64. Verify downloads with `SHA256SUMS.txt`.
-            See the README for usage, the OSL coverage and the roadmap (MMLT/BDPT is not in this release).
+            **Ubuntu 22.04 and newer (x86_64)**
+            - `.deb`: `sudo apt install ./nora_*_amd64.deb` installs `/usr/bin/nora` (GUI, with a desktop entry) and `/usr/bin/nora-cli`; examples and scenes go to `/usr/share/nora`.
+            - `.tar.gz`: portable binaries; needs `libx11-6` and `libgl1`.
+
+            **Windows x86_64**: `.zip` with `nora.exe` and `nora-cli.exe`.
+
+            **macOS arm64**: a `.tar.gz` is attached separately when the macOS build finishes.
+
+            Verify downloads with `SHA256SUMS.txt`. See the README for usage, the OSL coverage and the roadmap (MMLT/BDPT is not in this release).
           files: |
             dist/*.tar.gz
+            dist/*.deb
             dist/*.zip
             dist/SHA256SUMS.txt
           fail_on_unmatched_files: true
+
+  macos:
+    name: Build macos-arm64 (non-blocking)
+    runs-on: macos-latest
+    continue-on-error: true
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.REF }}
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DNORA_BUILD_GUI=ON
+      - name: Build
+        run: cmake --build build --parallel
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+      - name: Package
+        run: |
+          PKG="nora-${TAG}-macos-arm64"
+          mkdir -p "dist/$PKG"
+          cp build/nora-cli build/nora "dist/$PKG/"
+          cp -r README.md LICENSE examples scenes "dist/$PKG/"
+          cp third_party/obj/LICENSE "dist/$PKG/LICENSE.obj"
+          mkdir -p "dist/$PKG/renders" && cp renders/*.png "dist/$PKG/renders/" || true
+          tar -C dist -czf "dist/$PKG.tar.gz" "$PKG"
+          rm -rf "dist/$PKG"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64
+          path: dist/*
+
+  attach-macos:
+    name: Attach macOS build to the release (non-blocking)
+    needs: [publish, macos]
+    if: needs.publish.result == 'success' && needs.macos.result == 'success'
+    continue-on-error: true
+    runs-on: ubuntu-22.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-arm64
+          path: mac
+      - name: Upload asset and update SHA256SUMS.txt
+        run: |
+          set -euo pipefail
+          mkdir -p sums
+          gh release download "$TAG" --pattern SHA256SUMS.txt --dir sums
+          cd mac
+          for f in *.tar.gz; do
+            grep -v "  $f\$" ../sums/SHA256SUMS.txt > ../sums/tmp || true
+            mv ../sums/tmp ../sums/SHA256SUMS.txt
+            sha256sum "$f" >> ../sums/SHA256SUMS.txt
+          done
+          cat ../sums/SHA256SUMS.txt
+          gh release upload "$TAG" *.tar.gz ../sums/SHA256SUMS.txt --clobber
