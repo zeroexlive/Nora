@@ -1,4 +1,4 @@
-/* nora - interactive GUI.  usage: nora [cornell | cornell-glass | scene.obj]
+/* nora - interactive GUI.  usage: nora [cornell | cornell-glass | scene.obj | scene.nora]
  * MIT License. */
 #include "gui.h"
 #include <cui/cui_app.h>
@@ -12,7 +12,14 @@ static bool file_dialog(void *user, int save, const char *filter_name, const cha
     o.kind = save ? CUI_FILE_SAVE : CUI_FILE_OPEN;
     o.filter_name = filter_name;
     o.filter = filter;
-    o.default_name = save ? "nora_render.png" : NULL;
+    o.default_name = NULL;
+    if (save) {
+        if (strstr(filter, "nora")) o.default_name = "scene.nora";
+        else if (strstr(filter, "obj")) o.default_name = "export.obj";
+        else if (strstr(filter, "nrck")) o.default_name = "render.nrck";
+        else if (strstr(filter, "json")) o.default_name = "graph.json";
+        else o.default_name = "nora_render.png";
+    }
     return cui_app_file_dialog(NULL, &o, out, cap);
 }
 

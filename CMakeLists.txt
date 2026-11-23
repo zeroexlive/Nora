@@ -146,6 +146,7 @@ if(NORA_BUILD_TESTS)
 
     add_executable(nora_gui_headless tests/test_gui_headless.c)
     target_link_libraries(nora_gui_headless PRIVATE nora_gui)
+    target_compile_definitions(nora_gui_headless PRIVATE NORA_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     nora_warnings(nora_gui_headless)
     add_test(NAME gui_headless COMMAND nora_gui_headless ${CMAKE_CURRENT_BINARY_DIR}/gui_headless.png)
 
