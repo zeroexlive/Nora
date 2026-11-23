@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags-ignore: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux ${{ matrix.cc }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - cc: gcc
+            werror: OFF
+          - cc: clang
+            werror: ON
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build libx11-dev libgl1-mesa-dev libglu1-mesa-dev
+      - name: Configure
+        env:
+          CC: ${{ matrix.cc }}
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DNORA_BUILD_GUI=ON -DNORA_WARNINGS_AS_ERRORS=${{ matrix.werror }}
+      - name: Build (core, CLI, GUI, tests)
+        run: cmake --build build --parallel
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+      - name: CLI renders
+        run: |
+          ./build/nora-cli cornell --mode rgb --spp 32 --width 256 --height 256 -o build/ci_rgb.png
+          ./build/nora-cli cornell-glass --mode spectral --spp 32 --width 256 --height 256 -o build/ci_spectral.png
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: renders-linux-${{ matrix.cc }}
+          path: |
+            build/*.png
+            build/*.exr
+          if-no-files-found: ignore
+
+  linux-osl-shim:
+    name: Linux NORA_WITH_OSL=ON (shim, stub mode)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DNORA_BUILD_GUI=OFF -DNORA_WITH_OSL=ON
+      - name: Build
+        run: cmake --build build --parallel
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+      - name: CLI with --real-osl falls back to the built-in compiler
+        run: ./build/nora-cli cornell --integrator pt --spp 2 --width 32 --height 32 --real-osl --shader examples/shaders/plastic.osl --material White -o build/osl.png
+
+  windows:
+    name: Windows MSVC
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build -A x64 -DNORA_BUILD_GUI=ON
+      - name: Build
+        run: cmake --build build --config Release --parallel
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+  macos:
+    name: macOS
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DNORA_BUILD_GUI=ON
+      - name: Build
+        run: cmake --build build --parallel
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  macos-real-osl:
+    name: macOS with real OSL (best effort)
+    runs-on: macos-14
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install OpenShadingLanguage
+        run: brew install open-shading-language
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DNORA_BUILD_GUI=OFF -DNORA_WITH_OSL=ON -DCMAKE_PREFIX_PATH="$(brew --prefix)"
+      - name: Build
+        run: cmake --build build --parallel
+      - name: Render with liboslexec
+        run: ./build/nora-cli cornell --integrator pt --spp 4 --width 64 --height 64 --real-osl --shader examples/shaders/plastic.osl --material White -o build/real_osl.png

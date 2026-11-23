@@ -121,7 +121,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--env")) { const char *e = NEXT(); have_env = 1; if (sscanf(e, "%f,%f,%f", &env.x, &env.y, &env.z) == 1) env.y = env.z = env.x; }
         else if (!strcmp(a, "--quiet") || !strcmp(a, "-q")) quiet = 1;
         else if (!strcmp(a, "--real-osl")) {
-            if (!nora_use_real_osl(1)) fprintf(stderr, "nora-cli: --real-osl: this build has no OpenShadingLanguage backend (NORA_WITH_OSL); using the built-in compiler\n");
+            if (!nora_use_real_osl(1)) fprintf(stderr, "nora-cli: --real-osl: the real OpenShadingLanguage is not available in this build (configure with -DNORA_WITH_OSL=ON and OSL installed); using the built-in compiler\n");
         }
         else if (a[0] == '-') { fprintf(stderr, "nora-cli: unknown option '%s' (try --help)\n", a); return 2; }
         else scene_arg = a;
