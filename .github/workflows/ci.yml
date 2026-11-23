@@ -87,18 +87,3 @@ jobs:
         run: cmake --build build --parallel
       - name: Test
         run: ctest --test-dir build --output-on-failure
-
-  macos-real-osl:
-    name: macOS with real OSL (best effort)
-    runs-on: macos-latest
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install OpenShadingLanguage
-        run: brew install open-shading-language
-      - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DNORA_BUILD_GUI=OFF -DNORA_WITH_OSL=ON -DCMAKE_PREFIX_PATH="$(brew --prefix)"
-      - name: Build
-        run: cmake --build build --parallel
-      - name: Render with liboslexec
-        run: ./build/nora-cli cornell --integrator pt --spp 4 --width 64 --height 64 --real-osl --shader examples/shaders/plastic.osl --material White -o build/real_osl.png

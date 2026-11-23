@@ -13,6 +13,13 @@ OBJ/MTL import, and a headless CLI.
 Both images are 512 x 512 with 95 s of MLT on two aarch64 cores (`nora-cli cornell --time 95` and
 `nora-cli cornell-glass --mode spectral --time 95`).
 
+![Shader ball scene from OBJ/MTL with the marble.osl shader, spectral MLT](renders/shaderball_osl_spectral.png)
+
+`scenes/shaderball.obj` in spectral mode. It has an image-textured backdrop, a GGX copper cube and a
+dispersive glass ball from the MTL file, and `examples/shaders/marble.osl` on the left ball
+(`nora-cli scenes/shaderball.obj --mode spectral --fov 22 --shader examples/shaders/marble.osl
+--material Ball --time 85`).
+
 ## Features
 
 **Light transport**
@@ -195,8 +202,8 @@ If the flag is on but OSL is not found, the shim compiles as a stub and reports 
 the flag never breaks a build. The default build never needs C++, LLVM or OSL.
 
 Status: the stub mode is built and tested in CI. The real mode is a best-effort implementation against the
-OSL 1.12/1.13 API. A non-blocking CI job tries it on macOS with Homebrew's `open-shading-language`; it was
-not compiled in the development sandbox.
+OSL 1.12/1.13 API and has not been compiled yet: OSL is not packaged for the CI runners (Ubuntu 24.04 apt,
+Homebrew, conda-forge), and building it with LLVM was out of scope for 0.1.
 
 ## Shader graph JSON
 
