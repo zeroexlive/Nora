@@ -1,0 +1,13 @@
+// Checkerboard with soft noise variation, mixed in RGB and uplifted in spectral mode.
+surface checker(
+    float scale = 4.0,
+    color c1 = color(0.85, 0.85, 0.8),
+    color c2 = color(0.08, 0.1, 0.12),
+    float variation = 0.15)
+{
+    point q = P * scale;
+    float cell = mod(floor(q[0]) + floor(q[1]) + floor(q[2]), 2.0);
+    color base = cell < 1.0 ? c1 : c2;
+    base *= 1.0 - variation + variation * noise(q * 3.0);
+    Ci = base * diffuse(N);
+}

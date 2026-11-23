@@ -1,0 +1,13 @@
+{
+  "format": "nora-shader-graph",
+  "version": 1,
+  "nodes": [
+    { "id": 1, "type": "output", "x": 620.0, "y": 120.0, "op": 0, "text": "", "values": [[0, 0, 0]] },
+    { "id": 2, "type": "microfacet", "x": 340.0, "y": 100.0, "op": 0, "text": "", "values": [[1, 1, 1], [0.35, 0, 0], [0, 0, 0], [0, 0, 0]] },
+    { "id": 3, "type": "rgb", "x": 60.0, "y": 80.0, "op": 0, "text": "", "values": [[0.95, 0.64, 0.54]] }
+  ],
+  "links": [
+    { "from": [3, 0], "to": [2, 0] },
+    { "from": [2, 0], "to": [1, 0] }
+  ]
+}

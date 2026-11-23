@@ -1,0 +1,9 @@
+// Emissive panel with a radial falloff in uv space.
+surface emissive(
+    color tint = color(1.0, 0.85, 0.6),
+    float strength = 8.0)
+{
+    float d = distance(point(u, v, 0), point(0.5, 0.5, 0));
+    float k = 1.0 - smoothstep(0.3, 0.7, d);
+    Ci = tint * strength * (0.25 + 0.75 * k) * emission() + 0.2 * diffuse(N);
+}

@@ -1,0 +1,8 @@
+// Image texture lookup (uv, t = 0 at the top of the image) with a clear coat.
+surface textured(
+    float repeat = 1.0,
+    float gloss = 0.3)
+{
+    color albedo = texture("grid.png", u * repeat, (1.0 - v) * repeat);
+    Ci = albedo * diffuse(N) + gloss * reflection(N, 1.5);
+}

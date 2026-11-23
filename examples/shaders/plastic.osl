@@ -1,0 +1,12 @@
+// Plastic: a diffuse base under a glossy GGX dielectric coat.
+#include "stdosl.h"
+
+surface plastic(
+    color base = color(0.75, 0.2, 0.1) [[ string help = "Diffuse colour" ]],
+    float roughness = 0.25,
+    float ior = 1.5)
+{
+    float F0 = pow((ior - 1) / (ior + 1), 2);
+    float F = F0 + (1 - F0) * pow(1 - abs(dot(N, -I)), 5);
+    Ci = base * (1 - F) * diffuse(N) + microfacet("ggx", N, roughness * roughness, ior, 0);
+}

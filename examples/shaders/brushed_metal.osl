@@ -1,0 +1,10 @@
+// Gold-like metal: coloured specular reflection (GGX with Fresnel 1) scaled by a
+// Schlick approximation of the conductor colour.
+surface brushed_metal(
+    color f0 = color(1.0, 0.78, 0.34),
+    float roughness = 0.3)
+{
+    float c = abs(dot(N, -I));
+    color F = f0 + (color(1) - f0) * pow(1 - c, 5);
+    Ci = F * microfacet("ggx", N, roughness * roughness, 0.0, 0);
+}

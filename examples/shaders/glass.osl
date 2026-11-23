@@ -1,0 +1,10 @@
+// Rough glass: GGX reflection and refraction. N faces the viewer, so the
+// relative index is inverted when the ray is inside the object.
+surface glass(
+    color tint = color(0.95, 0.98, 1.0),
+    float roughness = 0.05,
+    float ior = 1.5)
+{
+    float eta = backfacing() ? 1.0 / ior : ior;
+    Ci = tint * microfacet("ggx", N, roughness * roughness, eta, 2);
+}
