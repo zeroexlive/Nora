@@ -4,7 +4,8 @@ Nora is a physically based renderer written in C99. It uses Metropolis light tra
 primary sample space MLT) on top of a unidirectional path tracer with next event estimation, and renders in
 either RGB or spectral mode. It has an interactive GUI built on [CUI](https://github.com/yappologistic/CUI),
 a node-based shader editor that generates Open Shading Language, its own OSL-subset compiler and VM,
-OBJ/MTL import, and a headless CLI.
+OBJ/MTL import and export, a scene editor (rasterized Edit mode with gizmos, undo/redo, hot reload),
+JSON scene files (`.nora`), pausable renders with checkpoints (`.nrck`), and a headless CLI.
 
 | RGB, PSSMLT | Spectral, PSSMLT (dispersive glass) |
 |---|---|
@@ -19,6 +20,15 @@ Both images are 512 x 512 with 95 s of MLT on two aarch64 cores (`nora-cli corne
 dispersive glass ball from the MTL file, and `examples/shaders/marble.osl` on the left ball
 (`nora-cli scenes/shaderball.obj --mode spectral --fov 22 --shader examples/shaders/marble.osl
 --material Ball --time 85`).
+
+| Built-in Cornell box | The same box edited in a `.nora` file |
+|---|---|
+| ![Cornell box](renders/edited_scene_before.png) | ![Cornell box with moved, rotated and scaled blocks](renders/edited_scene.png) |
+
+[`examples/scenes/cornell_edited.nora`](examples/scenes/cornell_edited.nora) moves the tall block back and
+turns it by -35 degrees, and moves, turns and stretches the short block. Both are 512 x 512 with 128
+mutations per pixel (`nora-cli examples/scenes/cornell_edited.nora -o renders/edited_scene.png`; the scene
+file carries the render settings).
 
 ## Features
 
@@ -66,6 +76,22 @@ dispersive glass ball from the MTL file, and `examples/shaders/marble.osl` on th
 - OBJ/MTL import through the vendored [schmarta/obj](https://github.com/schmarta/obj) (MIT; see
   [third_party/obj/README.nora.md](third_party/obj/README.nora.md) for the fixes made to it). MTL maps to Nora
   materials as described in [MTL mapping](#mtl-mapping).
+- Every object (OBJ `o`/`g` group, Cornell box part) is an instance with a translation, rotation and scale.
+  Rotations are quaternions internally and Euler XYZ degrees in files and in the UI. The BVH is rebuilt over
+  the transformed instances before rendering.
+- [`.nora` scene files](#scene-format-nora) (JSON): referenced OBJ files, per-object transforms, materials with
+  their OSL source or shader graph, the camera and the render settings. Save, load and save again gives the
+  same bytes.
+- Import an OBJ (with its MTL) into an open scene as new objects; export the scene as OBJ/MTL with the
+  transforms baked in.
+
+**Workflow**
+- Edit mode in the GUI: a software-rasterized solid / wireframe preview, click picking, move / rotate / scale
+  gizmos, numeric transforms, undo / redo, duplicate and delete. The path tracer does not run in this mode.
+- Hot reload: the `.nora` file and every OBJ, MTL, `.osl` and shader graph file it uses are polled every
+  0.5 s; a change reloads the scene, keeping the selection and the camera.
+- Pause and resume renders without losing anything; save and resume [checkpoints](#checkpoint-format-nrck),
+  also across processes from the CLI (`--checkpoint`, `--resume`, Ctrl+C safe).
 
 ## Building
 
@@ -96,6 +122,12 @@ Targets:
 ## Command line
 
 ```sh
+nora-cli examples/scenes/cornell_edited.nora -o edited.png        # a scene file (with its render settings)
+nora-cli cornell --spp 4096 --checkpoint run.nrck --checkpoint-interval 300 -o out.exr
+nora-cli cornell --resume run.nrck -o out.exr                       # finish an interrupted render
+nora-cli cornell --resume run.nrck --spp 8192 -o out.exr            # or raise the target and continue
+nora-cli scenes/shaderball.obj --save-scene shaderball.nora --no-render
+nora-cli my.nora --export-obj baked.obj --no-render
 nora-cli scene.obj --mode spectral --spp 64 -o out.png
 nora-cli cornell --integrator pt --spp 256 -o out.exr -o out.png
 nora-cli cornell-glass --mode spectral --time 120 --width 800 --height 800 -o glass.png
@@ -110,20 +142,62 @@ exposure, tone mapping, field of view, aperture and focus, a constant environmen
 
 OBJ files without emitters get a white constant environment light. The camera frames the scene bounds.
 
+The scene argument is `cornell`, `cornell-glass`, an `.obj` or a `.nora` file. A `.nora` file's `render`
+block sets the defaults; options on the command line override them.
+
+| Option | Meaning |
+|---|---|
+| `--checkpoint FILE` | Write a `.nrck` checkpoint when the render ends, when it is interrupted with Ctrl+C (SIGINT; the image is written too and the exit code is 130), and every `--checkpoint-interval` seconds |
+| `--checkpoint-interval S` | Seconds between periodic checkpoints (default 0: only at the end and on SIGINT) |
+| `--resume FILE` | Continue a checkpoint. Refused when the scene's hash differs from the one saved. Image size, mode, integrator, depth, seed and chain count come from the checkpoint; `--spp` is the new total target (default: the checkpoint's), `--time` limits this run, `--threads` may differ |
+| `--save-scene FILE` | Write the scene with the effective render settings as a `.nora` file |
+| `--export-obj FILE` | Write OBJ + MTL (next to it) with the object transforms baked in |
+| `--no-render` | Stop after `--save-scene` / `--export-obj` |
+
 ## GUI
 
 ```sh
 nora                      # Cornell box with the glass sphere
 nora scenes/shaderball.obj
+nora examples/scenes/cornell_edited.nora
 ```
 
-The window is a CUI dockspace. You can drag tabs to re-dock them. The panels are:
-- **Viewport**: the progressive render, drawn as a texture on a CUI canvas.
-  - Left drag orbits, Shift+left or middle drag pans, right drag (or Ctrl+left) dollies.
-  - `+`/`-` zoom, the arrow keys orbit, and `F` frames the scene.
-  - While the camera moves, a low-resolution path traced preview runs. Half a second after it stops, Nora
-    switches to progressive MLT at full resolution (this can be turned off in Render Settings).
-  - CUI 1.4 does not pass mouse wheel events to custom canvases, so zoom uses drags and keys.
+The window has a menu bar (CUI's menu bar component) over a CUI dockspace whose tabs can be re-docked.
+
+| Menu | Items |
+|---|---|
+| File | Open Scene (`.nora` or `.obj`, replaces the scene), Import Object (merges an OBJ and its MTL as new objects), Save Scene, Save Scene As, Export OBJ (transforms baked in), Save Image, Save Checkpoint, Resume from Checkpoint |
+| Edit | Undo, Redo, Duplicate, Delete |
+| View | Edit mode, Render mode, Wireframe, Move / Rotate / Scale gizmo, Frame scene |
+| Render | Render, Pause, Resume, Stop |
+
+File actions use the native file dialog (CUI). Without one (headless), they use the path fields under
+*Files* in Render Settings.
+
+The panels are:
+- **Viewport**, with an *Edit / Render* switch above it.
+  - **Render mode**: the progressive render, drawn as a texture on a CUI canvas. While the camera moves, a
+    low-resolution path traced preview runs. Half a second after it stops, Nora switches to progressive MLT
+    at full resolution (this can be turned off in Render Settings). A click picks the object under the
+    mouse with a ray through the BVH. *Pause* / *Resume* appear next to the switch during a render.
+  - **Edit mode**: no path tracing. Nora's own triangle rasterizer with a z-buffer
+    ([src/core/raster.c](src/core/raster.c)) draws a flat-shaded preview, optionally with wireframe, into an
+    RGBA image that goes through the same texture path as the render, so it also works with CUI's software
+    renderer. It also writes an object ID buffer: a click selects the object under the mouse, a click on
+    the background clears the selection. The selected object is tinted and outlined and gets a gizmo:
+    - Move (`W`): drag an arrow to move along that world axis.
+    - Rotate (`E`): drag a ring to turn around that world axis; the object follows the mouse.
+    - Scale (`R`): drag a handle to scale along that axis of the object.
+    Each drag is one undo step. Switching to Render (or starting a render) applies the transforms and
+    rebuilds the BVH.
+  - Camera (both modes): left drag orbits (in Edit mode: starting on empty space or the selected object,
+    not on a gizmo handle), Shift+left or middle drag pans, right drag (or Ctrl+left) dollies. `+`/`-` zoom,
+    the arrow keys orbit, `F` frames the scene. CUI 1.4 does not pass mouse wheel events to custom
+    canvases, so zoom uses drags and keys.
+- **Outliner**: objects and materials. Selecting an object selects its material.
+- **Properties**: the selected object's location, rotation (degrees, XYZ order) and scale as number fields
+  (typing into them within a second is one undo step), Duplicate, Delete and Reset; then the material:
+  type, colours, roughness, IOR, Abbe number and emission. Changes restart the preview.
 - **Node Editor**: CUI's node editor, holding the shader graph of the selected material.
   - Node types:
     - Inputs: Geometry, Value, RGB.
@@ -135,19 +209,52 @@ The window is a CUI dockspace. You can drag tabs to re-dock them. The panels are
     - Material Output.
   - Unlinked inputs show a slider or colour picker inside the node.
   - Graphs save and load as JSON. *Compile & assign* generates OSL, compiles it and assigns it to the
-    material.
+    material; the graph is stored with the material in the `.nora` file.
 - **OSL Source**: the generated OSL in CUI's code editor. It is live and editable: edits are checked with
   the built-in compiler as you type and can be assigned to the material.
-- **Outliner**: objects and materials. Selecting an object selects its material.
-- **Properties**: material type, colours, roughness, IOR, Abbe number and emission. Changes restart the
-  preview.
 - **Render Settings**:
+  - Render, Pause / Resume, Stop, Save image (PNG, EXR or PFM), Save checkpoint, Resume from checkpoint.
   - RGB or spectral mode, MLT or PT.
   - Large step (mutation) probability, mutations or samples per pixel, time limit, threads, depth and
-    resolution.
+    resolution. Raising the samples of a paused or finished render and pressing Resume continues it.
   - Exposure and tone mapping.
-  - Render, Stop and Save image (PNG, EXR or PFM).
-- **Log**: renderer and compiler messages.
+  - *Files*: the hot reload switch (on by default) and the paths used without a file dialog.
+- **Log**: renderer, compiler, edit and reload messages.
+
+### Hotkeys
+
+| Key | Action |
+|---|---|
+| `Ctrl+O` | Open Scene |
+| `Ctrl+I` | Import Object |
+| `Ctrl+S` / `Ctrl+Shift+S` | Save Scene / Save Scene As |
+| `Ctrl+Z` | Undo (transforms, imports, duplicates, deletes) |
+| `Ctrl+Y` or `Ctrl+Shift+Z` | Redo |
+| `Tab` (viewport) | Toggle Edit / Render mode |
+| `W` / `E` / `R` (viewport) | Move / Rotate / Scale gizmo |
+| `Shift+D` or `Ctrl+D` (viewport) | Duplicate the selected object |
+| `Delete` or `X` (viewport) | Delete the selected object |
+| `Esc` (viewport) | Clear the selection |
+| `F` (viewport) | Frame the scene |
+| `+` / `-`, arrow keys (viewport) | Zoom, orbit |
+| `F12` | Render |
+
+On macOS, Ctrl is Command.
+
+### Hot reload
+
+With *Hot reload* on, Nora polls the modification time and size of the scene's files about every 500 ms:
+the `.nora` file, the OBJ files and their MTL libraries, `.osl` files and shader graph files. When one
+changes:
+- the `.nora` file itself: the scene is loaded from it again;
+- anything else: the current scene (with its unsaved edits) is written to memory as a `.nora` document and
+  read back, which re-reads every referenced file; materials of an OBJ whose MTL changed take the new MTL
+  values.
+
+The selected object (by name) and the camera are kept, a line goes to the Log, the undo history is cleared
+and the preview restarts (a running final render restarts as a final render). Nora's own saves do not
+trigger a reload. If the file cannot be loaded (for example half written) the current scene stays and the
+next change is picked up. The detection logic is unit tested with an injected file system (`watch` test).
 
 ## Open Shading Language
 
@@ -205,6 +312,91 @@ Status: the stub mode is built and tested in CI. The real mode is a best-effort 
 OSL 1.12/1.13 API and has not been compiled yet: OSL is not packaged for the CI runners (Ubuntu 24.04 apt,
 Homebrew, conda-forge), and building it with LLVM was out of scope for 0.1.
 
+## Scene format (.nora)
+
+A `.nora` file is UTF-8 JSON. Paths are relative to the `.nora` file (absolute paths also work). Nora
+writes it in a fixed layout with floats at 9 significant digits, so save, load and save again gives the
+same bytes (unit tested for the Cornell boxes, an OBJ with MTL, textures and OSL files, inline OSL, inline
+graphs, imported and transformed objects).
+
+```json
+{
+  "format": "nora-scene",
+  "version": 1,
+  "name": "Cornell box (edited)",
+  "sources": [
+    { "type": "builtin", "name": "cornell" },
+    { "type": "obj", "path": "../../scenes/shaderball.obj" }
+  ],
+  "objects": [
+    { "name": "Tall block", "source": 0, "mesh": 6,
+      "translation": [0, 0, 40], "rotation": [0, -35, 0], "scale": [1, 1, 1] },
+    { "name": "Ball", "source": 1, "mesh": 2,
+      "translation": [0, 0, 0], "rotation": [0, 0, 0], "scale": [80, 80, 80] }
+  ],
+  "materials": [
+    { "name": "White", "type": "diffuse",
+      "color": [0.725, 0.71, 0.68], "edge_tint": [1, 1, 1], "roughness": 0, "ior": 1.5, "abbe": 0,
+      "emission": [0, 0, 0], "emission_strength": 0, "two_sided": false },
+    { "name": "Panel", "type": "diffuse", "color": [1, 1, 1], "...": "...",
+      "color_texture": "../../scenes/grid.png" },
+    { "name": "Ball", "type": "plastic", "...": "...",
+      "shader": { "name": "Ball", "osl_file": "../shaders/marble.osl" } }
+  ],
+  "camera": { "position": [278, 273, -800], "target": [278, 273, 0], "up": [0, 1, 0],
+    "fov": 39.3077, "aperture": 0, "focus_distance": 0 },
+  "environment": [0, 0, 0],
+  "render": { "width": 512, "height": 512, "mode": "rgb", "integrator": "mlt", "spp": 128,
+    "max_depth": 10, "large_step_probability": 0.3, "bootstrap": 100000, "chains": 64, "seed": 1, "time_limit": 0 }
+}
+```
+
+| Key | Meaning |
+|---|---|
+| `sources[]` | Geometry: `{"type": "obj", "path": ...}` or `{"type": "builtin", "name": "cornell" \| "cornell-glass"}`. Each is loaded once |
+| `objects[]` | One instance each. `source` indexes `sources`, `mesh` is the object's index in that source (OBJ `o`/`g` groups in file order); if it is out of range the object is looked up by `name`. Several objects may use the same source mesh (duplicates) |
+| `translation` | World-space offset |
+| `rotation` | Euler angles in degrees, XYZ order: rotate about X, then Y, then Z (fixed axes), R = Rz Ry Rx. Stored as a quaternion internally |
+| `scale` | Per-axis scale in the object's own frame |
+| | World position = pivot + translation + R (scale * (p - pivot)), where the pivot is the centre of the object's untransformed bounds |
+| `materials[]` | Matched to the sources' materials by name; the file wins. `type`: `diffuse`, `conductor`, `dielectric`, `plastic`. Optional `color_texture` |
+| `shader` | Optional. One of `osl_file` (an `.osl` file), `osl` (inline source), `graph_file` (a shader graph `.json`) or `graph` (the shader graph JSON inline) |
+| `camera` | Pinhole or thin lens; `fov` is vertical, in degrees |
+| `environment` | Constant environment radiance |
+| `render` | Optional render settings (see `nora-cli --help`) |
+
+Objects deleted in the editor are not written. A source is written once even when it was imported twice.
+
+## Checkpoint format (.nrck)
+
+A checkpoint holds everything a paused PSSMLT or PT render needs to continue as if it had never stopped:
+with the same thread count, N mutations, a checkpoint and M more equal N + M mutations in one go up to
+float summation order (tested in process and across CLI runs, within 0.1%). It is little-endian binary:
+
+| Field | Type |
+|---|---|
+| magic `NRCK` | 4 bytes |
+| version (1) | u32 |
+| scene hash: FNV-1a 64 over the transformed geometry, normals, UVs, materials, shader sources, textures, camera and environment | u64 |
+| width, height, mode, integrator, spp, max depth | 6 x i32 |
+| large step probability | f32 |
+| bootstrap paths, chain count | 2 x i32 |
+| seed | u64 |
+| normalisation constant `b` | f64 |
+| mutations or samples done; PT rows claimed; accepted; proposed | 4 x i64 |
+| elapsed seconds | f64 |
+| channel count (3), then the film: width x height x 3 sums (all threads added) | u32, f32[] |
+| PT only: samples per pixel | f32[width x height] |
+| chain count n (0 for PT, or before the MLT bootstrap has finished) | i32 |
+| per chain: PCG32 state and increment (u64 x 2); iteration and last large step (i64 x 2); large step flag and sample index (i32 x 2); current contribution RGB, its luminance and film position (f32 x 6); mutations done (i64); sample vector length m (i32); m x (value, backup as f32; modified-at, backup as i64) | |
+| chains ready flag | i32 |
+| end marker `0x454e4421` | u32 |
+
+Resuming refuses a checkpoint whose scene hash differs from the current scene (any moved object, material
+or camera change), whose version is unknown, or that is truncated. A checkpoint saved during the MLT
+bootstrap resumes by redoing the bootstrap. Pause is separate from Stop: pause keeps the chains, their RNG
+and sample state and the film in memory, and Resume continues accumulating; Stop ends the render.
+
 ## Shader graph JSON
 
 ```json
@@ -244,20 +436,41 @@ A link goes from `[node, output slot]` to `[node, input slot]`.
 - `render`:
   - MLT agrees with the path tracer within 8%, and spectral with RGB within 5%.
   - Determinism, the async API, EXR/PFM/PNG writing.
+- `scenefile`: save / load / save gives identical text for the Cornell boxes, an OBJ with MTL, a texture and
+  OSL files, inline OSL, an inline shader graph, imported and transformed objects; the same scene hash after
+  a round trip; error handling; scene dependencies; OBJ export with baked transforms reloads with the same
+  bounds and lights.
+- `edit`: transforms, duplicate, delete and their undo / redo; Euler and quaternion round trips.
+- `watch`: hot reload detection with an injected file system (polling interval, new mtime, new size,
+  deleted and recreated files, each change reported once) and with real files; path helpers.
+- `raster`: the Edit mode rasterizer and its ID buffer (picking, hidden objects, near-plane clipping).
+- `checkpoint`: N + checkpoint + M equals N + M (MLT and PT) within 0.1% while an independently seeded
+  render differs by more than 1%; pausing repeatedly mid-render; a checkpoint taken mid-render resumes in
+  another renderer; a changed scene and garbage files are refused.
 - `gui_headless`: builds every panel with CUI's software renderer, previews and renders with MLT, assigns a
-  graph shader, saves.
+  graph shader, saves; then the editing workflow with injected mouse and key events: Edit mode, picking by
+  click, gizmo drags (move, rotate, scale), Ctrl+Z / Ctrl+Y, Shift+D, Delete, import and its undo, saving a
+  `.nora` file, editing it on disk and hot reloading (and not with hot reload off), opening it, OBJ export,
+  pause / resume / checkpoint / resume from checkpoint, and a refused checkpoint of another scene. Writes
+  `gui_headless.png` and `gui_headless_edit.png`.
+- `cli_checkpoint`: across processes: render, checkpoint, resume in a new process with another thread count,
+  compare with a direct render; a checkpoint of another scene is refused; periodic checkpoints; PT.
+- `cli_scene_file`: a saved `.nora` renders like the built-in scene, moving an object in the file changes the
+  image, OBJ export.
 - Five CLI smoke renders, among them an OBJ with an OSL shader and a shader graph.
 
 ## Roadmap
 
-- **Multiplexed MLT over bidirectional path tracing (MMLT/BDPT).** Not implemented in 0.1. The lazy primary
+- **Multiplexed MLT over bidirectional path tracing (MMLT/BDPT).** Not implemented yet. The lazy primary
   sample space sampler, the bootstrap and the splatting would carry over; BDPT itself (light subpaths,
   connection MIS) and per-strategy stream splitting are the missing parts.
 - Mouse wheel zoom once CUI exposes scroll input to canvases.
 - Environment maps with importance sampling; more light types.
 - OSL: arrays, matrices, `getattribute`, derivatives.
 - Texture filtering (MIP maps), normal maps.
-- Instancing and transforms in the scene format.
+- Selecting several objects at once; parenting.
+- Picking against a top-level BVH over instances instead of re-transforming vertices (fine for the scene
+  sizes Nora targets today).
 
 ## License
 

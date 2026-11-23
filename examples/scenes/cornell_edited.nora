@@ -1,0 +1,48 @@
+{
+  "format": "nora-scene",
+  "version": 1,
+  "name": "Cornell box (edited)",
+  "sources": [
+    { "type": "builtin", "name": "cornell" }
+  ],
+  "objects": [
+    { "name": "Floor", "source": 0, "mesh": 0,
+      "translation": [0, 0, 0], "rotation": [0, 0, 0], "scale": [1, 1, 1] },
+    { "name": "Ceiling", "source": 0, "mesh": 1,
+      "translation": [0, 0, 0], "rotation": [0, 0, 0], "scale": [1, 1, 1] },
+    { "name": "Back wall", "source": 0, "mesh": 2,
+      "translation": [0, 0, 0], "rotation": [0, 0, 0], "scale": [1, 1, 1] },
+    { "name": "Green wall", "source": 0, "mesh": 3,
+      "translation": [0, 0, 0], "rotation": [0, 0, 0], "scale": [1, 1, 1] },
+    { "name": "Red wall", "source": 0, "mesh": 4,
+      "translation": [0, 0, 0], "rotation": [0, 0, 0], "scale": [1, 1, 1] },
+    { "name": "Light", "source": 0, "mesh": 5,
+      "translation": [0, 0, 0], "rotation": [0, 0, 0], "scale": [1, 1, 1] },
+    { "name": "Tall block", "source": 0, "mesh": 6,
+      "translation": [0, 0, 40], "rotation": [0, -35, 0], "scale": [1, 1, 1] },
+    { "name": "Short block", "source": 0, "mesh": 7,
+      "translation": [-40, 33, 0], "rotation": [0, 40, 0], "scale": [1, 1.4, 1] }
+  ],
+  "materials": [
+    { "name": "White", "type": "diffuse",
+      "color": [0.725000024, 0.709999979, 0.680000007], "edge_tint": [1, 1, 1], "roughness": 0, "ior": 1.5, "abbe": 0,
+      "emission": [0, 0, 0], "emission_strength": 0, "two_sided": false },
+    { "name": "Red", "type": "diffuse",
+      "color": [0.629999995, 0.0649999976, 0.0500000007], "edge_tint": [1, 1, 1], "roughness": 0, "ior": 1.5, "abbe": 0,
+      "emission": [0, 0, 0], "emission_strength": 0, "two_sided": false },
+    { "name": "Green", "type": "diffuse",
+      "color": [0.140000001, 0.449999988, 0.0909999982], "edge_tint": [1, 1, 1], "roughness": 0, "ior": 1.5, "abbe": 0,
+      "emission": [0, 0, 0], "emission_strength": 0, "two_sided": false },
+    { "name": "Light", "type": "diffuse",
+      "color": [0.779999971, 0.779999971, 0.779999971], "edge_tint": [1, 1, 1], "roughness": 0, "ior": 1.5, "abbe": 0,
+      "emission": [17, 12, 4], "emission_strength": 1, "two_sided": false },
+    { "name": "Glass", "type": "dielectric",
+      "color": [1, 1, 1], "edge_tint": [1, 1, 1], "roughness": 0, "ior": 1.60000002, "abbe": 18,
+      "emission": [0, 0, 0], "emission_strength": 0, "two_sided": false }
+  ],
+  "camera": { "position": [278, 273, -800], "target": [278, 273, 0], "up": [0, 1, 0],
+    "fov": 39.3077011, "aperture": 0, "focus_distance": 0 },
+  "environment": [0, 0, 0],
+  "render": { "width": 512, "height": 512, "mode": "rgb", "integrator": "mlt", "spp": 128,
+    "max_depth": 10, "large_step_probability": 0.300000012, "bootstrap": 100000, "chains": 64, "seed": 1, "time_limit": 0 }
+}
