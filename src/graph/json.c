@@ -210,3 +210,35 @@ void jb_str(js_buf *b, const char *s) {
     }
     jb_puts(b, "\"");
 }
+
+static void dump_num(js_buf *b, double d) {
+    if (d == 0.0) d = 0.0;   /* no "-0" */
+    if (d == (double)(long long)d && d > -1e15 && d < 1e15) jb_printf(b, "%lld", (long long)d);
+    else jb_printf(b, "%.17g", d);
+}
+
+void js_dump(js_buf *b, const js_value *v) {
+    const js_value *c;
+    if (!v) { jb_puts(b, "null"); return; }
+    switch (v->kind) {
+    case JS_NULL: jb_puts(b, "null"); break;
+    case JS_BOOL: jb_puts(b, v->num != 0.0 ? "true" : "false"); break;
+    case JS_NUM: dump_num(b, v->num); break;
+    case JS_STR: jb_str(b, v->str ? v->str : ""); break;
+    case JS_ARR:
+        jb_puts(b, "[");
+        for (c = v->child; c; c = c->next) { js_dump(b, c); if (c->next) jb_puts(b, ", "); }
+        jb_puts(b, "]");
+        break;
+    case JS_OBJ:
+        jb_puts(b, "{");
+        for (c = v->child; c; c = c->next) {
+            jb_str(b, c->key ? c->key : "");
+            jb_puts(b, ": ");
+            js_dump(b, c);
+            if (c->next) jb_puts(b, ", ");
+        }
+        jb_puts(b, "}");
+        break;
+    }
+}

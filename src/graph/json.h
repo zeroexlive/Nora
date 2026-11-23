@@ -29,4 +29,7 @@ void jb_puts(js_buf *b, const char *s);
 void jb_printf(js_buf *b, const char *fmt, ...);
 void jb_str(js_buf *b, const char *s);   /* quoted and escaped */
 
+/* compact canonical text of a parsed value (numbers as integers or %.17g) */
+void js_dump(js_buf *b, const js_value *v);
+
 #endif

@@ -1,6 +1,7 @@
 /* Nora - scene container, SAH BVH, light distribution, textures. MIT License. */
 #include "scene.h"
 #include "image.h"
+#include "fsutil.h"
 #include "../osl/osl.h"
 #ifdef NORA_WITH_OSL
 #include "osl_real.h"
@@ -50,9 +51,10 @@ void nora_scene_destroy(nora_scene *s) {
     if (!s) return;
     free_built(s);
     free(s->pos); free(s->nrm); free(s->uv); free(s->tris); free(s->mats); free(s->meshes);
+    free(s->sources); free(s->rest_pos); free(s->rest_nrm);
     for (i = 0; i < s->ntexs; i++) free(s->texs[i].rgb);
     free(s->texs);
-    for (i = 0; i < s->nshaders; i++) { free(s->shaders[i].source); osl_program_free(s->shaders[i].prog); free_real(&s->shaders[i]); }
+    for (i = 0; i < s->nshaders; i++) { free(s->shaders[i].source); osl_program_free(s->shaders[i].prog); free_real(&s->shaders[i]); free(s->shaders[i].graph_json); }
     free(s->shaders);
     free(s);
 }
@@ -86,6 +88,10 @@ int nora_scene_add_mesh(nora_scene *s, const char *name, int first_tri, int tri_
     strncpy(s->meshes[s->nmeshes].name, name ? name : "mesh", 63);
     s->meshes[s->nmeshes].first_tri = first_tri;
     s->meshes[s->nmeshes].tri_count = tri_count;
+    s->meshes[s->nmeshes].scale = v3_make(1, 1, 1);
+    s->meshes[s->nmeshes].rot = quat_identity();
+    s->meshes[s->nmeshes].source = -1;
+    s->meshes[s->nmeshes].source_mesh = -1;
     return s->nmeshes++;
 }
 int nora_scene_find_material(const nora_scene *s, const char *name) {
@@ -340,9 +346,14 @@ static void bvh_split(bbuild *b, int ni, int first, int count, int depth) {
     bvh_split(b, right, mid, first + count - mid, depth + 1);
 }
 
+static int tri_live(const nora_scene *s, int i) {
+    int m = s->tris[i].mesh;
+    return !(m >= 0 && m < s->nmeshes && s->meshes[m].hidden);
+}
+
 static int build_bvh(nora_scene *s) {
     bbuild b;
-    int i, root;
+    int i, root, nlive = 0;
     memset(&b, 0, sizeof b);
     b.s = s;
     if (s->ntris == 0) return 0;
@@ -355,16 +366,17 @@ static int build_bvh(nora_scene *s) {
         b.prims[i].bmin[0] = mn.x; b.prims[i].bmin[1] = mn.y; b.prims[i].bmin[2] = mn.z;
         b.prims[i].bmax[0] = mx.x; b.prims[i].bmax[1] = mx.y; b.prims[i].bmax[2] = mx.z;
         b.prims[i].c[0] = 0.5f * (mn.x + mx.x); b.prims[i].c[1] = 0.5f * (mn.y + mx.y); b.prims[i].c[2] = 0.5f * (mn.z + mx.z);
-        b.idx[i] = i;
+        if (tri_live(s, i)) b.idx[nlive++] = i;
     }
+    if (nlive == 0) { free(b.prims); free(b.idx); return 0; }
     root = bvh_new_node(&b);
-    bvh_split(&b, root, 0, s->ntris, 0);
+    bvh_split(&b, root, 0, nlive, 0);
     s->nodes = b.nodes;
     s->nnodes = b.nnodes;
     s->prim_idx = b.idx;
-    s->accel = (nora_tri_accel *)malloc(sizeof(nora_tri_accel) * (size_t)s->ntris);
+    s->accel = (nora_tri_accel *)malloc(sizeof(nora_tri_accel) * (size_t)nlive);
     if (!s->accel) { free(b.prims); return -1; }
-    for (i = 0; i < s->ntris; i++) {
+    for (i = 0; i < nlive; i++) {
         const nora_tri *t = &s->tris[b.idx[i]];
         v3 p0 = s->pos[t->v[0]];
         s->accel[i].p0 = p0;
@@ -393,7 +405,7 @@ static int build_lights(nora_scene *s) {
     double total = 0.0;
     float *w;
     s->tri_light_prob = (float *)calloc((size_t)(s->ntris > 0 ? s->ntris : 1), sizeof(float));
-    for (i = 0; i < s->ntris; i++) if (tri_is_emitter(s, &s->tris[i])) n++;
+    for (i = 0; i < s->ntris; i++) if (tri_live(s, i) && tri_is_emitter(s, &s->tris[i])) n++;
     s->nlights = n;
     s->light_tris = (int *)malloc(sizeof(int) * (size_t)(n > 0 ? n : 1));
     s->light_cdf = (float *)malloc(sizeof(float) * (size_t)(n + 1));
@@ -402,7 +414,7 @@ static int build_lights(nora_scene *s) {
     n = 0;
     for (i = 0; i < s->ntris; i++) {
         const nora_tri *t = &s->tris[i];
-        if (!tri_is_emitter(s, t)) continue;
+        if (!tri_live(s, i) || !tri_is_emitter(s, t)) continue;
         {
             const nora_material *m = &s->mats[t->mat];
             float power = (m->shader >= 0) ? 1.0f : nlum(m->emission) * m->emission_strength;
@@ -426,11 +438,14 @@ static int build_lights(nora_scene *s) {
 void nora_scene_bounds(const nora_scene *s, v3 *bmin, v3 *bmax) {
     int i;
     v3 mn = v3_splat(NORA_INFF), mx = v3_splat(-NORA_INFF);
+    int any = 0;
     for (i = 0; i < s->ntris; i++) {
         int k;
+        if (!tri_live(s, i)) continue;
+        any = 1;
         for (k = 0; k < 3; k++) { mn = v3_min(mn, s->pos[s->tris[i].v[k]]); mx = v3_max(mx, s->pos[s->tris[i].v[k]]); }
     }
-    if (s->ntris == 0) { mn = v3_splat(-1); mx = v3_splat(1); }
+    if (!any) { mn = v3_splat(-1); mx = v3_splat(1); }
     *bmin = mn; *bmax = mx;
 }
 
@@ -438,6 +453,7 @@ void nora_scene_invalidate(nora_scene *s) { s->built = 0; }
 
 int nora_scene_build(nora_scene *s) {
     free_built(s);
+    if (s->owned) nora_scene_apply_transforms(s);
     nora_scene_bounds(s, &s->bmin, &s->bmax);
     if (build_bvh(s) != 0) return -1;
     if (build_lights(s) != 0) return -1;
@@ -540,3 +556,352 @@ static int traverse(const nora_scene *s, const ray3 *r, nora_hit *hit, int any) 
 
 int nora_intersect(const nora_scene *s, const ray3 *r, nora_hit *hit) { return traverse(s, r, hit, 0); }
 int nora_occluded(const nora_scene *s, const ray3 *r) { nora_hit h; return traverse(s, r, &h, 1); }
+
+/* ------------------------------------------------------------ instances */
+
+static int ensure_rest_cap(nora_scene *s) {
+    if (s->cap_rest_pos < s->cap_pos) {
+        v3 *np = (v3 *)realloc(s->rest_pos, sizeof(v3) * (size_t)s->cap_pos);
+        if (!np) return -1;
+        s->rest_pos = np; s->cap_rest_pos = s->cap_pos;
+    }
+    if (s->cap_rest_nrm < s->cap_nrm) {
+        v3 *nn = (v3 *)realloc(s->rest_nrm, sizeof(v3) * (size_t)s->cap_nrm);
+        if (!nn) return -1;
+        s->rest_nrm = nn; s->cap_rest_nrm = s->cap_nrm;
+    }
+    return 0;
+}
+static int push_pos(nora_scene *s, v3 rest, v3 world) {
+    int i = nora_scene_add_pos(s, world);
+    if (i < 0 || ensure_rest_cap(s) != 0) return -1;
+    s->rest_pos[i] = rest;
+    return i;
+}
+static int push_nrm(nora_scene *s, v3 rest, v3 world) {
+    int i = nora_scene_add_nrm(s, world);
+    if (i < 0 || ensure_rest_cap(s) != 0) return -1;
+    s->rest_nrm[i] = rest;
+    return i;
+}
+
+void nora_mesh_set_euler(nora_mesh *m, v3 e) { m->euler_deg = e; m->rot = quat_from_euler_deg(e); }
+void nora_mesh_set_rot(nora_mesh *m, quat q) { m->rot = quat_normalize(q); m->euler_deg = quat_to_euler_deg(m->rot); }
+v3 nora_mesh_xform_point(const nora_mesh *m, v3 p) {
+    return v3_add(v3_add(m->pivot, m->translate), quat_rotate(m->rot, v3_mul(m->scale, v3_sub(p, m->pivot))));
+}
+v3 nora_mesh_center(const nora_mesh *m) { return v3_add(m->pivot, m->translate); }
+
+int nora_scene_own_vertices(nora_scene *s) {
+    const v3 *srcp = s->owned ? s->rest_pos : s->pos, *srcn = s->owned ? s->rest_nrm : s->nrm;
+    int cap_p = s->ntris * 3 + 1, cap_n = s->ntris * 3 + 1, np = 0, nn = 0, m, t, k;
+    v3 *P = (v3 *)malloc(sizeof(v3) * (size_t)cap_p), *N = (v3 *)malloc(sizeof(v3) * (size_t)cap_n);
+    int *pstamp = (int *)malloc(sizeof(int) * (size_t)(s->npos + 1)), *pmap = (int *)malloc(sizeof(int) * (size_t)(s->npos + 1));
+    int *nstamp = (int *)malloc(sizeof(int) * (size_t)(s->nnrm + 1)), *nmap = (int *)malloc(sizeof(int) * (size_t)(s->nnrm + 1));
+    char *done = (char *)calloc((size_t)s->ntris + 1, 1);
+    if (!P || !N || !pstamp || !pmap || !nstamp || !nmap || !done) {
+        free(P); free(N); free(pstamp); free(pmap); free(nstamp); free(nmap); free(done);
+        return -1;
+    }
+    for (k = 0; k < s->npos; k++) pstamp[k] = -1;
+    for (k = 0; k < s->nnrm; k++) nstamp[k] = -1;
+    for (m = 0; m <= s->nmeshes; m++) {
+        int lo, hi;
+        nora_mesh *me = m < s->nmeshes ? &s->meshes[m] : NULL;
+        if (me) { lo = me->first_tri; hi = me->first_tri + me->tri_count; me->first_pos = np; me->first_nrm = nn; }
+        else { lo = 0; hi = s->ntris; }              /* triangles outside every mesh */
+        for (t = lo; t < hi && t < s->ntris; t++) {
+            nora_tri *tr = &s->tris[t];
+            if (done[t]) continue;
+            done[t] = 1;
+            if (me) tr->mesh = m;
+            for (k = 0; k < 3; k++) {
+                int v = tr->v[k], n = tr->n[k];
+                if (pstamp[v] != m) { pstamp[v] = m; pmap[v] = np; P[np++] = srcp[v]; }
+                tr->v[k] = pmap[v];
+                if (n >= 0) {
+                    if (nstamp[n] != m) { nstamp[n] = m; nmap[n] = nn; N[nn++] = srcn[n]; }
+                    tr->n[k] = nmap[n];
+                }
+            }
+        }
+        if (me) {
+            v3 mn = v3_splat(NORA_INFF), mx = v3_splat(-NORA_INFF);
+            me->npos = np - me->first_pos;
+            me->nnrm = nn - me->first_nrm;
+            for (k = me->first_pos; k < np; k++) { mn = v3_min(mn, P[k]); mx = v3_max(mx, P[k]); }
+            me->pivot = me->npos > 0 ? v3_scale(v3_add(mn, mx), 0.5f) : v3_make(0, 0, 0);
+        }
+    }
+    free(pstamp); free(pmap); free(nstamp); free(nmap); free(done);
+    free(s->pos); free(s->nrm); free(s->rest_pos); free(s->rest_nrm);
+    s->pos = P; s->npos = np; s->cap_pos = cap_p;
+    s->nrm = N; s->nnrm = nn; s->cap_nrm = cap_n;
+    s->rest_pos = (v3 *)malloc(sizeof(v3) * (size_t)cap_p);
+    s->rest_nrm = (v3 *)malloc(sizeof(v3) * (size_t)cap_n);
+    if (!s->rest_pos || !s->rest_nrm) return -1;
+    s->cap_rest_pos = cap_p; s->cap_rest_nrm = cap_n;
+    memcpy(s->rest_pos, P, sizeof(v3) * (size_t)np);
+    memcpy(s->rest_nrm, N, sizeof(v3) * (size_t)nn);
+    s->owned = 1;
+    nora_scene_apply_transforms(s);
+    s->built = 0;
+    return 0;
+}
+
+void nora_scene_apply_transforms(nora_scene *s) {
+    int m, i;
+    if (!s->owned) return;
+    for (m = 0; m < s->nmeshes; m++) {
+        const nora_mesh *me = &s->meshes[m];
+        int ident = me->translate.x == 0.0f && me->translate.y == 0.0f && me->translate.z == 0.0f && me->scale.x == 1.0f &&
+                    me->scale.y == 1.0f && me->scale.z == 1.0f && me->rot.x == 0.0f && me->rot.y == 0.0f && me->rot.z == 0.0f;
+        v3 inv;
+        if (ident) {
+            memcpy(s->pos + me->first_pos, s->rest_pos + me->first_pos, sizeof(v3) * (size_t)me->npos);
+            memcpy(s->nrm + me->first_nrm, s->rest_nrm + me->first_nrm, sizeof(v3) * (size_t)me->nnrm);
+            continue;
+        }
+        inv = v3_make(me->scale.x != 0.0f ? 1.0f / me->scale.x : 1e8f, me->scale.y != 0.0f ? 1.0f / me->scale.y : 1e8f,
+                         me->scale.z != 0.0f ? 1.0f / me->scale.z : 1e8f);
+        for (i = me->first_pos; i < me->first_pos + me->npos; i++) s->pos[i] = nora_mesh_xform_point(me, s->rest_pos[i]);
+        for (i = me->first_nrm; i < me->first_nrm + me->nnrm; i++) s->nrm[i] = v3_norm(quat_rotate(me->rot, v3_mul(s->rest_nrm[i], inv)));
+    }
+    s->built = 0;
+}
+
+void nora_mesh_world_bounds(const nora_scene *s, int mesh, v3 *bmin, v3 *bmax) {
+    v3 mn = v3_splat(NORA_INFF), mx = v3_splat(-NORA_INFF);
+    int t, k;
+    const nora_mesh *me = &s->meshes[mesh];
+    for (t = me->first_tri; t < me->first_tri + me->tri_count; t++)
+        for (k = 0; k < 3; k++) { mn = v3_min(mn, s->pos[s->tris[t].v[k]]); mx = v3_max(mx, s->pos[s->tris[t].v[k]]); }
+    if (me->tri_count == 0) { mn = mx = nora_mesh_center(me); }
+    *bmin = mn; *bmax = mx;
+}
+
+int nora_scene_live_mesh_count(const nora_scene *s) {
+    int i, n = 0;
+    for (i = 0; i < s->nmeshes; i++) if (!s->meshes[i].hidden) n++;
+    return n;
+}
+
+int nora_scene_add_source(nora_scene *s, nora_source_kind kind, const char *path) {
+    GROW(s->sources, s->nsources, s->cap_sources, nora_source);
+    memset(&s->sources[s->nsources], 0, sizeof(nora_source));
+    s->sources[s->nsources].kind = kind;
+    if (path) nora_path_abs(path, s->sources[s->nsources].path, sizeof s->sources[0].path);
+    return s->nsources++;
+}
+
+static int mesh_name_used(const nora_scene *s, const char *name) {
+    int i;
+    for (i = 0; i < s->nmeshes; i++) if (!s->meshes[i].hidden && !strcmp(s->meshes[i].name, name)) return 1;
+    return 0;
+}
+
+int nora_scene_duplicate_mesh(nora_scene *s, int m) {
+    nora_mesh src;
+    int nm, i, k, n = 1, fp, fn;
+    char name[64];
+    if (m < 0 || m >= s->nmeshes) return -1;
+    if (!s->owned && nora_scene_own_vertices(s) != 0) return -1;
+    src = s->meshes[m];
+    {
+        /* "Name" -> "Name.001", "Name.001" -> "Name.002" */
+        char base[64];
+        const char *dot = strrchr(src.name, '.');
+        snprintf(base, sizeof base, "%s", src.name);
+        if (dot && strlen(dot) == 4 && dot[1] >= '0' && dot[1] <= '9') base[dot - src.name] = 0;
+        do { snprintf(name, sizeof name, "%.56s.%03d", base, n++ % 1000); } while (mesh_name_used(s, name) && n < 1000);
+    }
+    nm = nora_scene_add_mesh(s, name, s->ntris, src.tri_count);
+    if (nm < 0) return -1;
+    fp = s->npos;
+    fn = s->nnrm;
+    for (i = 0; i < src.npos; i++) if (push_pos(s, s->rest_pos[src.first_pos + i], s->pos[src.first_pos + i]) < 0) return -1;
+    for (i = 0; i < src.nnrm; i++) if (push_nrm(s, s->rest_nrm[src.first_nrm + i], s->nrm[src.first_nrm + i]) < 0) return -1;
+    for (i = 0; i < src.tri_count; i++) {
+        nora_tri t = s->tris[src.first_tri + i];
+        for (k = 0; k < 3; k++) {
+            t.v[k] = t.v[k] - src.first_pos + fp;
+            if (t.n[k] >= 0) t.n[k] = t.n[k] - src.first_nrm + fn;
+        }
+        t.mesh = nm;
+        if (nora_scene_add_tri(s, &t) < 0) return -1;
+    }
+    {
+        nora_mesh *d = &s->meshes[nm];
+        d->translate = src.translate; d->scale = src.scale; d->euler_deg = src.euler_deg; d->rot = src.rot;
+        d->pivot = src.pivot; d->source = src.source; d->source_mesh = src.source_mesh;
+        d->first_pos = fp; d->npos = src.npos; d->first_nrm = fn; d->nnrm = src.nnrm;
+    }
+    s->built = 0;
+    return nm;
+}
+
+static int find_texture(const nora_scene *s, const char *path) {
+    int i;
+    for (i = 0; i < s->ntexs; i++) if (!strcmp(s->texs[i].path, path)) return i;
+    return -1;
+}
+
+static int copy_texture(nora_scene *dst, const nora_scene *src, int ti) {
+    const nora_texture *t;
+    char full[1024];
+    int i;
+    size_t n;
+    if (ti < 0 || ti >= src->ntexs) return -1;
+    t = &src->texs[ti];
+    if (nora_path_is_abs(t->path) || !src->base_dir[0]) snprintf(full, sizeof full, "%s", t->path);
+    else { char j[1024]; nora_path_join(src->base_dir, t->path, j, sizeof j); nora_path_abs(j, full, sizeof full); }
+    if ((i = find_texture(dst, full)) >= 0) return i;
+    GROW(dst->texs, dst->ntexs, dst->cap_texs, nora_texture);
+    memset(&dst->texs[dst->ntexs], 0, sizeof(nora_texture));
+    snprintf(dst->texs[dst->ntexs].path, sizeof dst->texs[0].path, "%s", full);
+    dst->texs[dst->ntexs].w = t->w;
+    dst->texs[dst->ntexs].h = t->h;
+    n = (size_t)t->w * (size_t)t->h * 3;
+    dst->texs[dst->ntexs].rgb = (float *)malloc(sizeof(float) * (n ? n : 1));
+    if (dst->texs[dst->ntexs].rgb && n) memcpy(dst->texs[dst->ntexs].rgb, t->rgb, sizeof(float) * n);
+    return dst->ntexs++;
+}
+
+static int copy_shader(nora_scene *dst, const nora_shader_slot *sl) {
+    char err[512];
+    int slot = nora_scene_add_shader(dst, sl->name, sl->source ? sl->source : "", err, sizeof err);
+    nora_shader_slot *d;
+    if (slot < 0) { fprintf(stderr, "nora: shader %s: %s\n", sl->name, err); return -1; }
+    d = &dst->shaders[slot];
+    snprintf(d->file, sizeof d->file, "%s", sl->file);
+    snprintf(d->graph_file, sizeof d->graph_file, "%s", sl->graph_file);
+    if (sl->graph_json) {
+        d->graph_json = (char *)malloc(strlen(sl->graph_json) + 1);
+        if (d->graph_json) strcpy(d->graph_json, sl->graph_json);
+    }
+    return slot;
+}
+
+static int map_material(nora_scene *dst, const nora_scene *src, int mi, int *matmap) {
+    nora_material m;
+    int found;
+    if (mi < 0 || mi >= src->nmats) return 0;
+    if (matmap[mi] >= 0) return matmap[mi];
+    found = nora_scene_find_material(dst, src->mats[mi].name);
+    if (found >= 0) return matmap[mi] = found;
+    m = src->mats[mi];
+    m.color_tex = m.color_tex >= 0 ? copy_texture(dst, src, m.color_tex) : -1;
+    m.shader = (m.shader >= 0 && m.shader < src->nshaders) ? copy_shader(dst, &src->shaders[m.shader]) : -1;
+    return matmap[mi] = nora_scene_add_material(dst, &m);
+}
+
+int nora_scene_append(nora_scene *dst, const nora_scene *src, const int *list, int n) {
+    int *matmap, *uvmap, i, k, first = dst->nmeshes, soff = dst->nsources, li;
+    if (!src->owned) return -1;
+    if (!dst->owned && nora_scene_own_vertices(dst) != 0) return -1;
+    matmap = (int *)malloc(sizeof(int) * (size_t)(src->nmats + 1));
+    uvmap = (int *)malloc(sizeof(int) * (size_t)(src->nuv + 1));
+    if (!matmap || !uvmap) { free(matmap); free(uvmap); return -1; }
+    for (i = 0; i < src->nmats; i++) matmap[i] = -1;
+    for (i = 0; i < src->nuv; i++) uvmap[i] = -1;
+    for (i = 0; !list && i < src->nsources; i++) {
+        if (nora_scene_add_source(dst, src->sources[i].kind, NULL) < 0) break;
+        dst->sources[dst->nsources - 1] = src->sources[i];
+    }
+    for (li = 0; li < (list ? n : src->nmeshes); li++) {
+        int mi = list ? list[li] : li, nm, fp, fn;
+        nora_mesh sm;
+        if (mi < 0 || mi >= src->nmeshes) continue;
+        sm = src->meshes[mi];
+        if (!list && sm.hidden) continue;
+        nm = nora_scene_add_mesh(dst, sm.name, dst->ntris, sm.tri_count);
+        if (nm < 0) break;
+        fp = dst->npos; fn = dst->nnrm;
+        for (i = 0; i < sm.npos; i++) push_pos(dst, src->rest_pos[sm.first_pos + i], src->pos[sm.first_pos + i]);
+        for (i = 0; i < sm.nnrm; i++) push_nrm(dst, src->rest_nrm[sm.first_nrm + i], src->nrm[sm.first_nrm + i]);
+        for (i = 0; i < sm.tri_count; i++) {
+            nora_tri t = src->tris[sm.first_tri + i];
+            for (k = 0; k < 3; k++) {
+                t.v[k] = t.v[k] - sm.first_pos + fp;
+                if (t.n[k] >= 0) t.n[k] = t.n[k] - sm.first_nrm + fn;
+                if (t.t[k] >= 0) {
+                    int u = t.t[k];
+                    if (uvmap[u] < 0) uvmap[u] = nora_scene_add_uv(dst, src->uv[u * 2], src->uv[u * 2 + 1]);
+                    t.t[k] = uvmap[u];
+                }
+            }
+            t.mat = map_material(dst, src, t.mat, matmap);
+            t.mesh = nm;
+            nora_scene_add_tri(dst, &t);
+        }
+        {
+            nora_mesh *d = &dst->meshes[nm];
+            d->translate = sm.translate; d->scale = sm.scale; d->euler_deg = sm.euler_deg; d->rot = sm.rot;
+            d->pivot = sm.pivot;
+            d->source = (!list && sm.source >= 0) ? sm.source + soff : -1;
+            d->source_mesh = sm.source_mesh;
+            d->first_pos = fp; d->npos = sm.npos; d->first_nrm = fn; d->nnrm = sm.nnrm;
+        }
+    }
+    free(matmap); free(uvmap);
+    dst->built = 0;
+    return dst->nmeshes > first ? first : -1;
+}
+
+int nora_scene_import_obj(nora_scene *s, const char *path, int *count, char *err, size_t errcap) {
+    nora_scene *src = nora_scene_load_obj(path, err, errcap);
+    int first;
+    if (count) *count = 0;
+    if (!src) return -1;
+    first = nora_scene_append(s, src, NULL, 0);
+    nora_scene_destroy(src);
+    if (first < 0) { if (err) snprintf(err, errcap, "'%s' has no geometry", path); return -1; }
+    if (count) *count = s->nmeshes - first;
+    nora_scene_apply_transforms(s);
+    return first;
+}
+
+/* ----------------------------------------------------------------- hash */
+
+typedef struct fnv { uint64_t h; } fnv;
+static void fnv_bytes(fnv *f, const void *p, size_t n) {
+    const unsigned char *b = (const unsigned char *)p;
+    size_t i;
+    for (i = 0; i < n; i++) { f->h ^= b[i]; f->h *= 0x100000001b3ULL; }
+}
+static void fnv_f(fnv *f, float x) { uint32_t u; if (x == 0.0f) x = 0.0f; memcpy(&u, &x, 4); fnv_bytes(f, &u, 4); }
+static void fnv_v3(fnv *f, v3 v) { fnv_f(f, v.x); fnv_f(f, v.y); fnv_f(f, v.z); }
+static void fnv_i(fnv *f, int x) { int32_t v = (int32_t)x; fnv_bytes(f, &v, 4); }
+static void fnv_s(fnv *f, const char *s) { if (s) fnv_bytes(f, s, strlen(s)); fnv_i(f, -7); }
+
+uint64_t nora_scene_hash(nora_scene *s) {
+    fnv f;
+    int i, k;
+    f.h = 0xcbf29ce484222325ULL;
+    if (s->owned) nora_scene_apply_transforms(s);
+    for (i = 0; i < s->ntris; i++) {
+        const nora_tri *t = &s->tris[i];
+        if (!tri_live(s, i)) continue;
+        for (k = 0; k < 3; k++) {
+            fnv_v3(&f, s->pos[t->v[k]]);
+            if (t->n[k] >= 0) fnv_v3(&f, s->nrm[t->n[k]]); else fnv_i(&f, -1);
+            if (t->t[k] >= 0) { fnv_f(&f, s->uv[t->t[k] * 2]); fnv_f(&f, s->uv[t->t[k] * 2 + 1]); } else fnv_i(&f, -1);
+        }
+        fnv_i(&f, t->mat);
+    }
+    for (i = 0; i < s->nmats; i++) {
+        const nora_material *m = &s->mats[i];
+        fnv_i(&f, (int)m->type); fnv_v3(&f, m->color); fnv_i(&f, m->color_tex); fnv_v3(&f, m->edge_tint);
+        fnv_f(&f, m->roughness); fnv_f(&f, m->ior); fnv_f(&f, m->abbe); fnv_v3(&f, m->emission);
+        fnv_f(&f, m->emission_strength); fnv_i(&f, m->two_sided);
+        fnv_s(&f, (m->shader >= 0 && m->shader < s->nshaders) ? s->shaders[m->shader].source : "");
+    }
+    for (i = 0; i < s->ntexs; i++) {
+        fnv_i(&f, s->texs[i].w); fnv_i(&f, s->texs[i].h);
+        if (s->texs[i].rgb) fnv_bytes(&f, s->texs[i].rgb, sizeof(float) * 3 * (size_t)s->texs[i].w * (size_t)s->texs[i].h);
+    }
+    fnv_v3(&f, s->cam.pos); fnv_v3(&f, s->cam.target); fnv_v3(&f, s->cam.up);
+    fnv_f(&f, s->cam.vfov_deg); fnv_f(&f, s->cam.aperture); fnv_f(&f, s->cam.focus_dist);
+    fnv_v3(&f, s->env_color);
+    return f.h;
+}

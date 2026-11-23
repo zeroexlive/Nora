@@ -235,7 +235,7 @@ void test_obj(void) {
     s = nora_scene_load_obj("nora_test_obj.obj", err, sizeof err);
     CHECK(s != NULL);
     if (!s) { printf("  %s\n", err); return; }
-    CHECK(s->npos == 8);
+    CHECK(s->npos == 8 + 8);   /* objects own their vertices: "Lamp" gets its own copies of the 8 it shares with "Box" */
     CHECK(s->nnrm == 2);
     CHECK(s->nuv == 4);
     CHECK(s->ntris == 2 + 2 + 1 + 2 + 3);

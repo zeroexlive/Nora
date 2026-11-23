@@ -44,6 +44,10 @@ typedef struct nora_shader_slot {
     struct osl_program *prog;  /* compiled program (owned) */
     void *real;                /* NORA_WITH_OSL: shader compiled by the real liboslcomp, or NULL */
     int may_emit;
+    /* where the shader came from, for scene files and hot reload (all optional) */
+    char file[1024];           /* .osl file (absolute) */
+    char graph_file[1024];     /* shader graph .json file (absolute) */
+    char *graph_json;          /* inline shader graph (owned), the source was generated from it */
 } nora_shader_slot;
 
 typedef struct nora_camera {
@@ -61,10 +65,32 @@ typedef struct nora_tri {
     int mesh;
 } nora_tri;
 
+/* A mesh is one object (an instance) of the scene. Its rest geometry is kept in
+ * rest_pos / rest_nrm; the instance transform maps it into pos / nrm:
+ *   world = pivot + translate + R(rot) * (scale * (rest - pivot))
+ * where pivot is the centre of the rest bounds. rot is the quaternion used
+ * internally; euler_deg (XYZ, degrees, R = Rz Ry Rx) is what the user edits and
+ * what scene files store. */
 typedef struct nora_mesh {
     char name[64];
     int first_tri, tri_count;
+    v3 translate, scale, euler_deg;
+    quat rot;
+    v3 pivot;
+    int first_pos, npos, first_nrm, nnrm;   /* owned vertex ranges (after nora_scene_own_vertices) */
+    int source, source_mesh;                /* origin: index into scene sources and mesh in it, -1 = none */
+    int hidden;                             /* deleted (kept so the deletion can be undone) */
 } nora_mesh;
+
+typedef enum nora_source_kind { NORA_SRC_OBJ = 0, NORA_SRC_CORNELL, NORA_SRC_CORNELL_GLASS } nora_source_kind;
+
+#define NORA_MAX_DEPS 16
+typedef struct nora_source {
+    nora_source_kind kind;
+    char path[1024];                        /* absolute path of the OBJ file */
+    char deps[NORA_MAX_DEPS][1024];         /* files it pulled in (MTL libraries, OSL), absolute */
+    int ndeps;
+} nora_source;
 
 typedef struct nora_bvh_node {
     float bmin[3], bmax[3];
@@ -83,6 +109,11 @@ typedef struct nora_scene {
     nora_texture *texs; int ntexs, cap_texs;
     nora_shader_slot *shaders; int nshaders, cap_shaders;
     nora_mesh *meshes; int nmeshes, cap_meshes;
+    nora_source *sources; int nsources, cap_sources;
+    v3 *rest_pos, *rest_nrm;             /* rest geometry (when owned) */
+    int cap_rest_pos, cap_rest_nrm;
+    int owned;                           /* every mesh owns its vertex range */
+    char file_path[1024];                /* the .nora file this scene was loaded from or saved to */
     nora_camera cam;
     v3 env_color;                        /* constant environment radiance (0 = none) */
     char name[128];
@@ -119,6 +150,33 @@ int nora_scene_add_shader(nora_scene *s, const char *name, const char *source, c
 int nora_use_real_osl(int on);
 int nora_scene_replace_shader(nora_scene *s, int slot, const char *source, char *err, size_t errcap);
 
+/* Instances. nora_scene_own_vertices gives every mesh its own contiguous vertex
+ * range (duplicating shared vertices) and records the rest geometry; loaders call
+ * it. nora_scene_apply_transforms recomputes pos/nrm from the rest geometry and
+ * the instance transforms (nora_scene_build calls it). */
+int nora_scene_own_vertices(nora_scene *s);
+void nora_scene_apply_transforms(nora_scene *s);
+void nora_mesh_set_euler(nora_mesh *m, v3 euler_deg);    /* sets euler_deg and rot */
+void nora_mesh_set_rot(nora_mesh *m, quat q);            /* sets rot and euler_deg */
+v3 nora_mesh_xform_point(const nora_mesh *m, v3 rest);
+v3 nora_mesh_center(const nora_mesh *m);                 /* world position of the pivot */
+void nora_mesh_world_bounds(const nora_scene *s, int mesh, v3 *bmin, v3 *bmax);
+int nora_scene_live_mesh_count(const nora_scene *s);
+int nora_scene_add_source(nora_scene *s, nora_source_kind kind, const char *path);
+/* Copies mesh m (geometry, material, transform) as a new mesh; returns its index or -1. */
+int nora_scene_duplicate_mesh(nora_scene *s, int m);
+/* Appends meshes of src to dst (all live meshes when list is NULL). Materials are
+ * merged by name (dst wins), shaders and textures are copied. With list == NULL
+ * the sources are appended too; with a list the new meshes get source -1 and the
+ * caller sets it. src must be owned. Returns the index of the first new mesh, or -1. */
+int nora_scene_append(nora_scene *dst, const nora_scene *src, const int *list, int n);
+/* "Import Object": loads an OBJ (with its MTL) and merges it as new objects.
+ * Returns the first new mesh (count in *count), -1 on failure (err filled). */
+int nora_scene_import_obj(nora_scene *s, const char *path, int *count, char *err, size_t errcap);
+/* 64-bit hash of everything that changes the rendered image (geometry after the
+ * transforms, materials, shaders, textures, camera, environment). */
+uint64_t nora_scene_hash(nora_scene *s);
+
 /* Builds the BVH and the light distribution. Call after edits, before rendering. */
 int nora_scene_build(nora_scene *s);
 void nora_scene_invalidate(nora_scene *s);
@@ -143,5 +201,7 @@ nora_scene *nora_scene_cornell(int variant);
 
 /* OBJ/MTL import (third_party/obj, MIT). Returns NULL and fills err on failure. */
 nora_scene *nora_scene_load_obj(const char *path, char *err, size_t errcap);
+/* OBJ/MTL export of the live meshes with their transforms baked in. */
+int nora_scene_export_obj(nora_scene *s, const char *path, char *err, size_t errcap);
 
 #endif

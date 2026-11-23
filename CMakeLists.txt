@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(Nora VERSION 0.1.0 DESCRIPTION "Physically based renderer with Metropolis light transport" LANGUAGES C)
+project(Nora VERSION 0.2.0 DESCRIPTION "Physically based renderer with Metropolis light transport" LANGUAGES C)
 
 option(NORA_BUILD_GUI "Build the interactive GUI (CUI window layer: X11/OpenGL on Linux, Win32, Cocoa)" ON)
 option(NORA_BUILD_TESTS "Build the unit tests" ON)
@@ -74,10 +74,15 @@ add_library(nora_core STATIC
     src/core/cornell.c
     src/core/obj_import.c
     src/core/nthread.c
+    src/core/fsutil.c
+    src/core/scenefile.c
+    src/core/edit.c
+    src/core/watch.c
+    src/core/raster.c
     third_party/obj/obj.c)
 target_include_directories(nora_core PUBLIC src/core third_party/obj)
 target_include_directories(nora_core PRIVATE ${NORA_STB_DIR})
-target_link_libraries(nora_core PUBLIC nora_osl Threads::Threads)
+target_link_libraries(nora_core PUBLIC nora_osl nora_graph Threads::Threads)
 nora_warnings(nora_core)
 set_source_files_properties(third_party/obj/obj.c PROPERTIES COMPILE_OPTIONS "$<$<C_COMPILER_ID:GNU,Clang,AppleClang>:-Wno-sign-compare>")
 

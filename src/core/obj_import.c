@@ -12,6 +12,7 @@
  */
 #include "scene.h"
 #include "obj.h"
+#include "fsutil.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -124,6 +125,14 @@ static char *read_file(const char *path) {
     return buf;
 }
 
+static void add_dep(nora_scene *s, int src, const char *path) {
+    nora_source *so;
+    if (src < 0 || src >= s->nsources) return;
+    so = &s->sources[src];
+    if (so->ndeps >= NORA_MAX_DEPS) return;
+    nora_path_abs(path, so->deps[so->ndeps++], sizeof so->deps[0]);
+}
+
 static void map_material(nora_scene *s, const mtl_def *d, nora_material *m) {
     int transparent = d->d < 0.99f || d->illum == 4 || d->illum == 6 || d->illum == 7 || d->illum == 9 ||
                       (d->has_Tf && v3_maxc(d->Tf) < 0.99f && v3_maxc(d->Tf) > 0.0f);
@@ -168,11 +177,12 @@ static void map_material(nora_scene *s, const mtl_def *d, nora_material *m) {
     if (d->shader[0]) {
         char full[1024], err[512];
         char *src;
-        snprintf(full, sizeof full, "%s/%s", s->base_dir, d->shader);
-        src = read_file(d->shader[0] == '/' ? d->shader : full);
+        nora_path_join(s->base_dir, d->shader, full, sizeof full);
+        src = read_file(full);
+        add_dep(s, 0, full);
         if (src) {
             int slot = nora_scene_add_shader(s, d->name, src, err, sizeof err);
-            if (slot >= 0) m->shader = slot;
+            if (slot >= 0) { m->shader = slot; nora_path_abs(full, s->shaders[slot].file, sizeof s->shaders[slot].file); }
             else fprintf(stderr, "nora: %s: %s\n", d->shader, err);
             free(src);
         } else {
@@ -187,7 +197,7 @@ nora_scene *nora_scene_load_obj(const char *path, char *err, size_t errcap) {
     mtl_def *defs = NULL;
     int ndefs = 0, i, *matmap = NULL, any_emit = 0;
     size_t t, g;
-    int *order = NULL, *gcount = NULL, *gstart = NULL;
+    int *order = NULL, *gcount = NULL, *gstart = NULL, src;
     if (!o) { if (err) snprintf(err, errcap, "cannot load OBJ file '%s'", path); return NULL; }
     s = nora_scene_create();
     if (!s) { obj_free(o); return NULL; }
@@ -196,11 +206,16 @@ nora_scene *nora_scene_load_obj(const char *path, char *err, size_t errcap) {
         snprintf(s->name, sizeof s->name, "%s", b ? b + 1 : path);
     }
     dir_of(path, s->base_dir, sizeof s->base_dir);
+    src = nora_scene_add_source(s, NORA_SRC_OBJ, path);
     for (t = 0; t < o->mtllib_count; t++) {
         char full[1024];
+        const char *used = full;
         snprintf(full, sizeof full, "%s/%s", s->base_dir, o->mtllibs[t]);
-        if (parse_mtl(full, &defs, &ndefs) != 0 && parse_mtl(o->mtllibs[t], &defs, &ndefs) != 0)
-            fprintf(stderr, "nora: cannot read material library %s\n", full);
+        if (parse_mtl(full, &defs, &ndefs) != 0) {
+            used = o->mtllibs[t];
+            if (parse_mtl(o->mtllibs[t], &defs, &ndefs) != 0) { fprintf(stderr, "nora: cannot read material library %s\n", full); used = full; }
+        }
+        add_dep(s, src, used);
     }
     /* materials referenced by the OBJ, in order of first use */
     matmap = (int *)malloc(sizeof(int) * (o->material_count + 1));
@@ -261,6 +276,8 @@ nora_scene *nora_scene_load_obj(const char *path, char *err, size_t errcap) {
     }
     free(order); free(gcount); free(gstart); free(matmap); free(defs);
     obj_free(o);
+    for (i = 0; i < s->nmeshes; i++) { s->meshes[i].source = src; s->meshes[i].source_mesh = i; }
+    nora_scene_own_vertices(s);
     nora_scene_frame_camera(s);
     if (!any_emit) s->env_color = v3_make(1.0f, 1.0f, 1.0f);
     return s;

@@ -124,5 +124,8 @@ nora_scene *nora_scene_cornell(int variant) {
     s->cam.aperture = 0.0f;
     s->cam.focus_dist = 0.0f;
     (void)glass;
+    nora_scene_add_source(s, variant ? NORA_SRC_CORNELL_GLASS : NORA_SRC_CORNELL, NULL);
+    for (i = 0; i < s->nmeshes; i++) { s->meshes[i].source = 0; s->meshes[i].source_mesh = i; }
+    nora_scene_own_vertices(s);
     return s;
 }
