@@ -267,7 +267,7 @@ nora_scene *nora_scenefile_read_string(const char *text, const char *dir, nora_s
     loaded = (nora_scene **)calloc((size_t)nsrc + 1, sizeof *loaded);
     if (!s || !loaded) goto fail;
     snprintf(s->name, sizeof s->name, "%s", js_str(js_get(root, "name"), "scene"));
-    snprintf(s->base_dir, sizeof s->base_dir, "%s", absdir);
+    nora_strlcpy(s->base_dir, absdir, sizeof s->base_dir);
     /* sources */
     for (i = 0; i < nsrc; i++) {
         const js_value *sv = js_at(srcs, i);

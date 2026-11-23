@@ -55,6 +55,15 @@ int nora_write_file_atomic(const char *path, const void *data, size_t len) {
     return 0;
 }
 
+void nora_strlcpy(char *dst, const char *src, size_t cap) {
+    size_t n;
+    if (!cap) return;
+    n = src ? strlen(src) : 0;
+    if (n >= cap) n = cap - 1;
+    if (n) memcpy(dst, src, n);
+    dst[n] = 0;
+}
+
 static int is_sep(char c) { return c == '/' || c == '\\'; }
 
 void nora_path_dir(const char *path, char *out, size_t cap) {

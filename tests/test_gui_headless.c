@@ -57,7 +57,7 @@ static int editing(nora_gui *g, const char *outdir) {
     int fails = 0, tall, n0, m;
     float x, y, vx, vy, vw, vh;
     nora_scene *s;
-    char path[1024], cmd[1200], obj[1024];
+    char path[1200], cmd[1300], obj[1100];
     v3 t0;
 #define EXPECT(c) do { if (!(c)) { printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #c); fails++; } } while (0)
     snprintf(obj, sizeof obj, "%s/scenes/shaderball.obj", NORA_SOURCE_DIR);
@@ -201,7 +201,9 @@ static int editing(nora_gui *g, const char *outdir) {
     {
         double t0w = ntime_now();
         long long before = 0, after = 0, paused_at = 0;
-        while (ntime_now() - t0w < 0.4) frames(g, 1, 20);
+        /* past the MLT bootstrap, then a little more */
+        while (ntime_now() - t0w < 30.0) { long long n = 0; nora_gui_render_samples(g, &n); if (n > 0) break; frames(g, 1, 10); }
+        frames(g, 5, 20);
         EXPECT(nora_gui_command(g, "pause") == 0);
         EXPECT(nora_gui_is_paused(g) && !nora_gui_is_rendering(g));
         nora_gui_render_samples(g, &paused_at);

@@ -11,6 +11,9 @@ char *nora_read_file(const char *path, size_t *len);
 /* Writes a whole file through a temporary file and a rename. 0 on success. */
 int nora_write_file_atomic(const char *path, const void *data, size_t len);
 
+/* Copies src into dst (cap bytes, always terminated, truncates). */
+void nora_strlcpy(char *dst, const char *src, size_t cap);
+
 /* Path helpers. Separators '/' and '\\' are both accepted; '/' is written. */
 void nora_path_dir(const char *path, char *out, size_t cap);           /* "." when there is no directory */
 const char *nora_path_base(const char *path);

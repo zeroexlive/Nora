@@ -758,7 +758,7 @@ static int copy_texture(nora_scene *dst, const nora_scene *src, int ti) {
     if ((i = find_texture(dst, full)) >= 0) return i;
     GROW(dst->texs, dst->ntexs, dst->cap_texs, nora_texture);
     memset(&dst->texs[dst->ntexs], 0, sizeof(nora_texture));
-    snprintf(dst->texs[dst->ntexs].path, sizeof dst->texs[0].path, "%s", full);
+    nora_strlcpy(dst->texs[dst->ntexs].path, full, sizeof dst->texs[0].path);
     dst->texs[dst->ntexs].w = t->w;
     dst->texs[dst->ntexs].h = t->h;
     n = (size_t)t->w * (size_t)t->h * 3;

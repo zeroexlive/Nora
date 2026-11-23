@@ -432,6 +432,7 @@ static void select_mesh(nora_gui *g, int m) {
 static void set_scene(nora_gui *g, nora_scene *s, const char *arg, int keep_camera) {
     nora_camera cam;
     int had = g->scene != NULL;
+    memset(&cam, 0, sizeof cam);
     stop_render(g);
     if (had) cam = g->scene->cam;
     if (g->scene) nora_scene_destroy(g->scene);
@@ -496,7 +497,7 @@ static int save_scene(nora_gui *g, const char *path) {
     if (!path[0]) { logf_(g, "save: no file name"); return -1; }
     if (nora_scenefile_save(g->scene, &st, path, err, sizeof err) != 0) { logf_(g, "save: %s", err); return -1; }
     snprintf(g->scene_file, sizeof g->scene_file, "%s", g->scene->file_path);
-    snprintf(g->scene_path, sizeof g->scene_path, "%s", path);
+    nora_strlcpy(g->scene_path, path, sizeof g->scene_path);
     watch_update(g);   /* our own write is not a change */
     logf_(g, "saved scene %s", path);
     return 0;
@@ -1102,7 +1103,7 @@ static int ask_path(nora_gui *g, int save, const char *name, const char *filter,
     char path[1024];
     if (g->host.file_dialog) {
         if (!g->host.file_dialog(g->host.user, save, name, filter, path, sizeof path)) return 0;
-        snprintf(field, cap, "%s", path);
+        nora_strlcpy(field, path, cap);
     }
     return field[0] != 0;   /* without a dialog the path field in Render Settings is used */
 }

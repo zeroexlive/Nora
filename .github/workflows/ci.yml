@@ -20,7 +20,7 @@ jobs:
       matrix:
         include:
           - cc: gcc
-            werror: OFF
+            werror: ON
           - cc: clang
             werror: ON
     steps:
