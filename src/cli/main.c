@@ -1,21 +1,30 @@
 /* nora-cli - headless renderer.
  *   nora-cli scene.obj --mode spectral --spp 64 -o out.png
  *   nora-cli cornell --integrator pt --mode rgb --spp 256 -o out.exr
+ *   nora-cli scene.nora --checkpoint run.nrck --checkpoint-interval 60
+ *   nora-cli scene.nora --resume run.nrck --spp 1024 -o out.exr
  * MIT License. */
 #include "render.h"
 #include "image.h"
 #include "scene.h"
+#include "scenefile.h"
 #include "graph.h"
 #include "osl.h"
+#include "nthread.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <signal.h>
+
+static volatile sig_atomic_t g_interrupted = 0;
+static void on_sigint(int sig) { (void)sig; g_interrupted = 1; }
 
 static void usage(void) {
     printf(
         "Nora %s - physically based renderer (Metropolis light transport)\n\n"
         "usage: nora-cli [scene] [options]\n\n"
-        "  scene                 cornell | cornell-glass | path/to/file.obj   (default: cornell)\n"
+        "  scene                 cornell | cornell-glass | file.obj | file.nora   (default: cornell)\n"
+        "                        a .nora file also sets the render settings; options below override them\n"
         "  -o, --output FILE     output image, .png / .exr / .pfm (repeatable; default nora.png)\n"
         "  --mode rgb|spectral   colour transport (default rgb)\n"
         "  --integrator mlt|pt   PSSMLT or path tracing (default mlt)\n"
@@ -38,8 +47,16 @@ static void usage(void) {
         "  --aperture R --focus D  thin lens: lens radius and focus distance (scene units)\n"
         "  --env R,G,B           constant environment light\n"
         "  --real-osl            compile and run shaders with liboslcomp/liboslexec (NORA_WITH_OSL builds)\n"
+        "  --checkpoint FILE     save a .nrck checkpoint at the end, on Ctrl+C (SIGINT) and every\n"
+        "                        --checkpoint-interval seconds\n"
+        "  --checkpoint-interval S   seconds between periodic checkpoints (default 0 = off)\n"
+        "  --resume FILE         continue a checkpoint (refused if the scene differs); --spp is the\n"
+        "                        new total, --time the time for this run; image settings come from the checkpoint\n"
+        "  --save-scene FILE     write the scene (with these settings) as a .nora file\n"
+        "  --export-obj FILE     write the scene as OBJ/MTL with the object transforms baked in\n"
+        "  --no-render           stop after --save-scene / --export-obj\n"
         "  --quiet               less output\n",
-        "0.1.0");
+        "0.2.0");
 }
 
 static char *read_file(const char *path) {
@@ -68,8 +85,26 @@ static int assign_shader(nora_scene *s, const char *name, const char *src, const
     return 0;
 }
 
+static int save_ckpt(nora_render *r, uint64_t hash, const char *path, int quiet) {
+    char err[512];
+    if (nora_render_save_checkpoint(r, hash, path, err, sizeof err) != 0) { fprintf(stderr, "nora-cli: checkpoint: %s\n", err); return -1; }
+    if (!quiet) {
+        nora_render_stats rs;
+        nora_render_get_stats(r, &rs);
+        printf("nora: checkpoint %s (%lld %s)\n", path, (long long)rs.samples,
+               nora_render_settings(r)->integrator == NORA_INT_MLT ? "mutations" : "samples");
+    }
+    return 0;
+}
+
 int main(int argc, char **argv) {
-    nora_settings st;
+    nora_settings st, cli;
+    int have_spp = 0, have_time = 0, have_threads = 0, have_w = 0, have_h = 0, have_mode = 0, have_int = 0, have_depth = 0;
+    int have_plarge = 0, have_boot = 0, have_chains = 0, have_seed = 0, no_render = 0, interrupted = 0;
+    const char *ckpt = NULL, *resume = NULL, *save_scene = NULL, *export_obj = NULL;
+    double ckpt_interval = 0.0;
+    nora_render *r;
+    uint64_t hash;
     const char *scene_arg = "cornell", *outputs[8], *shader = NULL, *graph = NULL, *material = NULL;
     int nout = 0, i, quiet = 0, dump_osl = 0;
     float exposure = 0.0f, fov = 0.0f, aperture = -1.0f, focus = -1.0f;
@@ -79,7 +114,7 @@ int main(int argc, char **argv) {
     nora_scene *s;
     float *img;
     nora_render_stats stats;
-    nora_settings_default(&st);
+    nora_settings_default(&cli);
     for (i = 1; i < argc; i++) {
         const char *a = argv[i];
 #define NEXT() (i + 1 < argc ? argv[++i] : (fprintf(stderr, "nora-cli: %s needs a value\n", a), exit(2), ""))
@@ -87,25 +122,33 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "-o") || !strcmp(a, "--output")) { if (nout < 8) outputs[nout++] = NEXT(); }
         else if (!strcmp(a, "--mode")) {
             const char *m = NEXT();
-            if (!strcmp(m, "rgb")) st.mode = NORA_MODE_RGB;
-            else if (!strcmp(m, "spectral")) st.mode = NORA_MODE_SPECTRAL;
+            have_mode = 1;
+            if (!strcmp(m, "rgb")) cli.mode = NORA_MODE_RGB;
+            else if (!strcmp(m, "spectral")) cli.mode = NORA_MODE_SPECTRAL;
             else { fprintf(stderr, "nora-cli: unknown mode '%s'\n", m); return 2; }
         } else if (!strcmp(a, "--integrator")) {
             const char *m = NEXT();
-            if (!strcmp(m, "mlt") || !strcmp(m, "pssmlt")) st.integrator = NORA_INT_MLT;
-            else if (!strcmp(m, "pt") || !strcmp(m, "path")) st.integrator = NORA_INT_PT;
+            have_int = 1;
+            if (!strcmp(m, "mlt") || !strcmp(m, "pssmlt")) cli.integrator = NORA_INT_MLT;
+            else if (!strcmp(m, "pt") || !strcmp(m, "path")) cli.integrator = NORA_INT_PT;
             else { fprintf(stderr, "nora-cli: unknown integrator '%s' (mlt, pt)\n", m); return 2; }
         }
-        else if (!strcmp(a, "--spp")) st.spp = atoi(NEXT());
-        else if (!strcmp(a, "--time")) st.time_limit = (float)atof(NEXT());
-        else if (!strcmp(a, "--threads")) st.threads = atoi(NEXT());
-        else if (!strcmp(a, "--width")) st.width = atoi(NEXT());
-        else if (!strcmp(a, "--height")) st.height = atoi(NEXT());
-        else if (!strcmp(a, "--max-depth")) st.max_depth = atoi(NEXT());
-        else if (!strcmp(a, "--plarge")) st.p_large = (float)atof(NEXT());
-        else if (!strcmp(a, "--bootstrap")) st.bootstrap = atoi(NEXT());
-        else if (!strcmp(a, "--chains")) st.chains = atoi(NEXT());
-        else if (!strcmp(a, "--seed")) st.seed = (uint64_t)strtoull(NEXT(), NULL, 10);
+        else if (!strcmp(a, "--spp")) { cli.spp = atoi(NEXT()); have_spp = 1; }
+        else if (!strcmp(a, "--time")) { cli.time_limit = (float)atof(NEXT()); have_time = 1; }
+        else if (!strcmp(a, "--threads")) { cli.threads = atoi(NEXT()); have_threads = 1; }
+        else if (!strcmp(a, "--width")) { cli.width = atoi(NEXT()); have_w = 1; }
+        else if (!strcmp(a, "--height")) { cli.height = atoi(NEXT()); have_h = 1; }
+        else if (!strcmp(a, "--max-depth")) { cli.max_depth = atoi(NEXT()); have_depth = 1; }
+        else if (!strcmp(a, "--plarge")) { cli.p_large = (float)atof(NEXT()); have_plarge = 1; }
+        else if (!strcmp(a, "--bootstrap")) { cli.bootstrap = atoi(NEXT()); have_boot = 1; }
+        else if (!strcmp(a, "--chains")) { cli.chains = atoi(NEXT()); have_chains = 1; }
+        else if (!strcmp(a, "--seed")) { cli.seed = (uint64_t)strtoull(NEXT(), NULL, 10); have_seed = 1; }
+        else if (!strcmp(a, "--checkpoint")) ckpt = NEXT();
+        else if (!strcmp(a, "--checkpoint-interval")) ckpt_interval = atof(NEXT());
+        else if (!strcmp(a, "--resume")) resume = NEXT();
+        else if (!strcmp(a, "--save-scene")) save_scene = NEXT();
+        else if (!strcmp(a, "--export-obj")) export_obj = NEXT();
+        else if (!strcmp(a, "--no-render")) no_render = 1;
         else if (!strcmp(a, "--exposure")) exposure = (float)atof(NEXT());
         else if (!strcmp(a, "--tonemap")) {
             const char *t = NEXT();
@@ -128,7 +171,6 @@ int main(int argc, char **argv) {
 #undef NEXT
     }
     if (nout == 0) outputs[nout++] = "nora.png";
-    if (st.width <= 0 || st.height <= 0 || st.width > 16384 || st.height > 16384) { fprintf(stderr, "nora-cli: bad image size\n"); return 2; }
 
     if (graph && dump_osl) {
         ng_graph g;
@@ -143,13 +185,25 @@ int main(int argc, char **argv) {
     }
 
     spectrum_init();
-    if (!strcmp(scene_arg, "cornell")) s = nora_scene_cornell(0);
-    else if (!strcmp(scene_arg, "cornell-glass")) s = nora_scene_cornell(1);
-    else {
+    {
         char err[512];
-        s = nora_scene_load_obj(scene_arg, err, sizeof err);
+        s = nora_scene_open(scene_arg, &st, NULL, err, sizeof err);
         if (!s) { fprintf(stderr, "nora-cli: %s\n", err); return 1; }
     }
+    /* command line options override the scene file's render settings */
+    if (have_spp) st.spp = cli.spp;
+    if (have_time) st.time_limit = cli.time_limit;
+    if (have_threads) st.threads = cli.threads;
+    if (have_w) st.width = cli.width;
+    if (have_h) st.height = cli.height;
+    if (have_mode) st.mode = cli.mode;
+    if (have_int) st.integrator = cli.integrator;
+    if (have_depth) st.max_depth = cli.max_depth;
+    if (have_plarge) st.p_large = cli.p_large;
+    if (have_boot) st.bootstrap = cli.bootstrap;
+    if (have_chains) st.chains = cli.chains;
+    if (have_seed) st.seed = cli.seed;
+    if (st.width <= 0 || st.height <= 0 || st.width > 16384 || st.height > 16384) { fprintf(stderr, "nora-cli: bad image size\n"); return 2; }
     if (shader) {
         char *src = read_file(shader);
         if (!src) { fprintf(stderr, "nora-cli: cannot read %s\n", shader); return 1; }
@@ -170,14 +224,66 @@ int main(int argc, char **argv) {
     if (aperture >= 0.0f) s->cam.aperture = aperture;
     if (focus > 0.0f) s->cam.focus_dist = focus;
     if (have_env) s->env_color = env;
+    if (save_scene) {
+        char err[512];
+        if (nora_scenefile_save(s, &st, save_scene, err, sizeof err) != 0) { fprintf(stderr, "nora-cli: %s\n", err); return 1; }
+        if (!quiet) printf("nora: wrote %s\n", save_scene);
+    }
+    if (export_obj) {
+        char err[512];
+        if (nora_scene_export_obj(s, export_obj, err, sizeof err) != 0) { fprintf(stderr, "nora-cli: %s\n", err); return 1; }
+        if (!quiet) printf("nora: wrote %s\n", export_obj);
+    }
+    if (no_render) { nora_scene_destroy(s); return 0; }
     if (nora_scene_build(s) != 0) { fprintf(stderr, "nora-cli: scene build failed\n"); return 1; }
+    hash = nora_scene_hash(s);
+    if (resume) {
+        char err[512];
+        r = nora_render_load_checkpoint(s, hash, resume, have_threads ? cli.threads : st.threads, err, sizeof err);
+        if (!r) { fprintf(stderr, "nora-cli: cannot resume: %s\n", err); return 1; }
+        if (have_spp && nora_render_settings(r)->spp != st.spp) nora_render_set_spp(r, st.spp);
+        nora_render_set_time_limit(r, have_time ? st.time_limit : 0.0f);
+        st = *nora_render_settings(r);
+    } else {
+        r = nora_render_create(s, &st);
+        if (!r) { fprintf(stderr, "nora-cli: cannot create the renderer\n"); return 1; }
+    }
     if (!quiet)
         printf("nora: %s, %d triangles, %d emitters, %dx%d, %s, %s, %d %s\n", s->name, s->ntris, s->nlights, st.width, st.height,
                nora_mode_name(st.mode), nora_integrator_name(st.integrator), st.spp,
                st.integrator == NORA_INT_MLT ? "mutations/pixel" : "spp");
+    if (resume && !quiet) {
+        nora_render_get_stats(r, &stats);
+        printf("nora: resuming %s at %lld %s\n", resume, (long long)stats.samples, st.integrator == NORA_INT_MLT ? "mutations" : "samples");
+    }
     img = (float *)malloc(sizeof(float) * 3 * (size_t)st.width * (size_t)st.height);
     if (!img) return 1;
-    if (nora_render_blocking(s, &st, img, &stats) != 0) { fprintf(stderr, "nora-cli: render failed\n"); return 1; }
+    signal(SIGINT, on_sigint);
+    if (resume) nora_render_resume(r);
+    else nora_render_start(r);
+    {
+        double last = ntime_now();
+        while (nora_render_is_running(r)) {
+            nsleep_ms(20);
+            if (g_interrupted) {
+                nora_render_pause(r);
+                interrupted = 1;
+                fprintf(stderr, "nora-cli: interrupted%s\n", ckpt ? ", saving the checkpoint" : "");
+                break;
+            }
+            if (ckpt && ckpt_interval > 0.0 && ntime_now() - last >= ckpt_interval) {
+                nora_render_pause(r);
+                save_ckpt(r, hash, ckpt, quiet);
+                last = ntime_now();
+                if (nora_render_can_resume(r)) nora_render_resume(r);
+            }
+        }
+        nora_render_wait(r);
+    }
+    if (ckpt && save_ckpt(r, hash, ckpt, quiet) != 0) return 1;
+    nora_render_resolve(r, img);
+    nora_render_get_stats(r, &stats);
+    nora_render_destroy(r);
     if (!quiet) {
         printf("nora: %.2f s, %lld %s", stats.elapsed, (long long)stats.samples, st.integrator == NORA_INT_MLT ? "mutations" : "samples");
         if (st.integrator == NORA_INT_MLT) printf(", acceptance %.1f%%, b = %.5g", 100.0 * stats.acceptance, stats.b);
@@ -192,5 +298,5 @@ int main(int argc, char **argv) {
     }
     free(img);
     nora_scene_destroy(s);
-    return 0;
+    return interrupted ? 130 : 0;
 }

@@ -174,7 +174,8 @@ int nora_scene_append(nora_scene *dst, const nora_scene *src, const int *list, i
  * Returns the first new mesh (count in *count), -1 on failure (err filled). */
 int nora_scene_import_obj(nora_scene *s, const char *path, int *count, char *err, size_t errcap);
 /* 64-bit hash of everything that changes the rendered image (geometry after the
- * transforms, materials, shaders, textures, camera, environment). */
+ * transforms, materials, shaders, textures, camera, environment). Uses the
+ * current pos/nrm: call it after nora_scene_build or nora_scene_apply_transforms. */
 uint64_t nora_scene_hash(nora_scene *s);
 
 /* Builds the BVH and the light distribution. Call after edits, before rendering. */

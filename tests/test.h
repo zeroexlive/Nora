@@ -15,4 +15,9 @@ void test_obj(void);
 void test_render(void);
 void test_osl(void);
 void test_graph(void);
+void test_scenefile(void);
+void test_edit(void);
+void test_watch(void);
+void test_raster(void);
+void test_checkpoint(void);
 #endif

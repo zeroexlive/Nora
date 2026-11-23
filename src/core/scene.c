@@ -878,7 +878,6 @@ uint64_t nora_scene_hash(nora_scene *s) {
     fnv f;
     int i, k;
     f.h = 0xcbf29ce484222325ULL;
-    if (s->owned) nora_scene_apply_transforms(s);
     for (i = 0; i < s->ntris; i++) {
         const nora_tri *t = &s->tris[i];
         if (!tri_live(s, i)) continue;

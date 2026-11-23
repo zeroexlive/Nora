@@ -9,6 +9,8 @@ typedef struct { const char *name; void (*fn)(void); } suite;
 static const suite suites[] = {
     { "spectrum", test_spectrum }, { "bsdf", test_bsdf }, { "bvh", test_bvh }, { "obj", test_obj },
     { "osl", test_osl }, { "graph", test_graph }, { "render", test_render },
+    { "scenefile", test_scenefile }, { "edit", test_edit }, { "watch", test_watch }, { "raster", test_raster },
+    { "checkpoint", test_checkpoint },
 };
 
 int main(int argc, char **argv) {

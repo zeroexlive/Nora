@@ -126,13 +126,23 @@ endif()
 # ---------------------------------------------------------------- tests
 if(NORA_BUILD_TESTS)
     enable_testing()
-    add_executable(nora_tests tests/test_main.c tests/test_core.c tests/test_osl.c tests/test_graph.c)
+    add_executable(nora_tests tests/test_main.c tests/test_core.c tests/test_osl.c tests/test_graph.c tests/test_scene.c)
     target_link_libraries(nora_tests PRIVATE nora_core nora_graph)
     target_compile_definitions(nora_tests PRIVATE NORA_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     nora_warnings(nora_tests)
-    foreach(suite spectrum bsdf bvh obj osl graph render)
+    foreach(suite spectrum bsdf bvh obj osl graph render scenefile edit watch raster checkpoint)
         add_test(NAME ${suite} COMMAND nora_tests ${suite})
     endforeach()
+
+    add_executable(nora_imgcmp tests/imgcmp.c)
+    if(NOT MSVC)
+        target_link_libraries(nora_imgcmp PRIVATE m)
+    endif()
+    nora_warnings(nora_imgcmp)
+    add_test(NAME cli_checkpoint COMMAND ${CMAKE_COMMAND} -DCLI=$<TARGET_FILE:nora-cli> -DCMP=$<TARGET_FILE:nora_imgcmp>
+             -DDIR=${CMAKE_CURRENT_BINARY_DIR} -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/checkpoint_cli.cmake)
+    add_test(NAME cli_scene_file COMMAND ${CMAKE_COMMAND} -DCLI=$<TARGET_FILE:nora-cli> -DCMP=$<TARGET_FILE:nora_imgcmp>
+             -DDIR=${CMAKE_CURRENT_BINARY_DIR} -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/scene_cli.cmake)
 
     add_executable(nora_gui_headless tests/test_gui_headless.c)
     target_link_libraries(nora_gui_headless PRIVATE nora_gui)

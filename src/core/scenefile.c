@@ -450,8 +450,12 @@ int nora_scene_export_obj(nora_scene *s, const char *path, char *err, size_t err
     for (i = 0; i < s->nmeshes; i++) {
         const nora_mesh *m = &s->meshes[i];
         int cur = -2;
+        int dupe = 0, j;
         if (m->hidden || m->tri_count == 0) continue;
-        fprintf(f, "o %s\n", m->name);
+        /* OBJ readers merge groups of the same name: keep object names unique */
+        for (j = 0; j < i; j++) if (!s->meshes[j].hidden && s->meshes[j].tri_count > 0 && !strcmp(s->meshes[j].name, m->name)) dupe++;
+        if (dupe) fprintf(f, "o %s.%d\n", m->name, dupe);
+        else fprintf(f, "o %s\n", m->name);
         for (k = 0; k < m->npos; k++) { v3 p = s->pos[m->first_pos + k]; fprintf(f, "v %.9g %.9g %.9g\n", (double)p.x, (double)p.y, (double)p.z); }
         for (k = 0; k < m->nnrm; k++) { v3 p = s->nrm[m->first_nrm + k]; fprintf(f, "vn %.9g %.9g %.9g\n", (double)p.x, (double)p.y, (double)p.z); }
         for (t = m->first_tri; t < m->first_tri + m->tri_count; t++) {
